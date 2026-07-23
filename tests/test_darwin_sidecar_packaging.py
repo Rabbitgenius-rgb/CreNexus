@@ -21,6 +21,17 @@ import sidecar_tester  # noqa: E402
 
 
 class DarwinSidecarPackagingTest(unittest.TestCase):
+    @staticmethod
+    def write_thin_macho(path: Path, architecture: str = "arm64") -> None:
+        cpu_type = {
+            "arm64": 0x0100000C,
+            "x86_64": 0x01000007,
+        }[architecture]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(
+            b"\xcf\xfa\xed\xfe" + cpu_type.to_bytes(4, byteorder="little", signed=False)
+        )
+
     def make_layout_fixture(self, root: Path) -> sidecar_builder.BuildLayout:
         scripts = root / "apps" / "starbridge-desktop" / "scripts"
         binaries = root / "apps" / "starbridge-desktop" / "src-tauri" / "binaries"
@@ -104,6 +115,27 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
                 {"CARGO_BUILD_TARGET": "../private-target"},
             )
 
+    def test_host_target_detection_does_not_execute_path_rustc(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="KORYAO fake rustc ") as temporary:
+            root = Path(temporary)
+            trace = root / "rustc.trace"
+            rustc = root / "rustc"
+            rustc.write_text(
+                f"#!/bin/sh\nprintf executed > {os.fspath(trace)!r}\n",
+                encoding="utf-8",
+            )
+            rustc.chmod(0o755)
+            with (
+                mock.patch.dict(os.environ, {"PATH": os.fspath(root)}, clear=False),
+                mock.patch.object(sidecar_builder.platform, "system", return_value="Darwin"),
+                mock.patch.object(sidecar_builder.platform, "machine", return_value="arm64"),
+            ):
+                self.assertEqual(
+                    "aarch64-apple-darwin",
+                    sidecar_builder.detect_host_target(),
+                )
+            self.assertFalse(trace.exists())
+
     def test_target_layouts_isolate_environment_build_and_support_files(self) -> None:
         arm = sidecar_builder.layout_for(REPO_ROOT, "aarch64-apple-darwin")
         intel = sidecar_builder.layout_for(REPO_ROOT, "x86_64-apple-darwin")
@@ -185,6 +217,19 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
     ) -> None:
         inherited = {
             "PATH": "/trusted/bin",
+            "DYLD_INSERT_LIBRARIES": "/outside/injected.dylib",
+            "DYLD_LIBRARY_PATH": "/outside/dyld",
+            "LD_PRELOAD": "/outside/preload.so",
+            "LD_LIBRARY_PATH": "/outside/ld",
+            "MAGIC": "/outside/magic",
+            "DEVELOPER_DIR": "/outside/developer",
+            "SDKROOT": "/outside/sdk",
+            "TOOLCHAINS": "outside-toolchain",
+            "XCRUN_CACHE_PATH": "/outside/xcrun-cache",
+            "CODESIGN_ALLOCATE": "/outside/codesign_allocate",
+            "STARBRIDGE_SESSION_TOKEN": "inherited-secret",
+            "STARBRIDGE_APP_DATA_DIR": "/outside/app-data",
+            "CODEX_HOME": "/outside/codex-home",
             "PYTHONPATH": "/attacker",
             "PYTHONHOME": "/outside",
             "PYTHONUSERBASE": "/outside-user",
@@ -198,14 +243,19 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
             "PIP_PROXY": "http://proxy.invalid:8080",
             "PIP_CERT": "/certs/pip.pem",
             "HTTPS_PROXY": "http://proxy.invalid:8443",
+            "SSL_CERT_FILE": "/certs/python.pem",
         }
 
         python_environment = sidecar_builder.sanitized_environment(inherited)
-        self.assertEqual("/trusted/bin", python_environment["PATH"])
+        self.assertEqual(sidecar_builder.SANITIZED_PATH, python_environment["PATH"])
         self.assertEqual("http://proxy.invalid:8443", python_environment["HTTPS_PROXY"])
+        self.assertEqual("/certs/python.pem", python_environment["SSL_CERT_FILE"])
         self.assertFalse(
             any(
-                name.upper().startswith(("PYTHON", "PIP_")) or name.upper() == "__PYVENV_LAUNCHER__"
+                name.upper().startswith(("PYTHON", "PIP_", "DYLD_", "LD_"))
+                or name.upper() == "__PYVENV_LAUNCHER__"
+                or name.upper() in sidecar_builder.TOOLCHAIN_ENVIRONMENT_VARIABLES
+                or name.upper() in sidecar_builder.RUNTIME_ENVIRONMENT_VARIABLES
                 for name in python_environment
             )
         )
@@ -232,6 +282,8 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
         self.assertEqual("1", pip_environment["PIP_DISABLE_PIP_VERSION_CHECK"])
         self.assertEqual("http://proxy.invalid:8080", pip_environment["PIP_PROXY"])
         self.assertEqual("/certs/pip.pem", pip_environment["PIP_CERT"])
+        self.assertEqual("http://proxy.invalid:8443", pip_environment["HTTPS_PROXY"])
+        self.assertEqual("/certs/python.pem", pip_environment["SSL_CERT_FILE"])
 
     @unittest.skipIf(os.name == "nt", "POSIX wrapper checks do not run on Windows")
     def test_wrapper_python_isolation_blocks_startup_injection(self) -> None:
@@ -257,6 +309,50 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
             completed = subprocess.run(
                 [
                     "sh",
+                    SCRIPTS_DIR / "Build-Sidecar.sh",
+                    "--print-plan",
+                    "--target-triple",
+                    "aarch64-apple-darwin",
+                ],
+                env=environment,
+                check=False,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            )
+
+            self.assertEqual(0, completed.returncode, completed.stderr)
+            self.assertFalse(trace.exists())
+
+    @unittest.skipUnless(sys.platform == "darwin", "Darwin loader injection test")
+    def test_wrapper_ignores_fake_path_and_loader_environment(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="KORYAO fake wrapper path ") as temporary:
+            fake_bin = Path(temporary) / "fake-bin"
+            fake_bin.mkdir()
+            trace = Path(temporary) / "fake-command.trace"
+            for name in ("dirname", "env", "sed", "python3"):
+                executable = fake_bin / name
+                executable.write_text(
+                    f"#!/bin/sh\nprintf {name!r} >> {os.fspath(trace)!r}\nexit 97\n",
+                    encoding="utf-8",
+                )
+                executable.chmod(0o755)
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "PATH": os.fspath(fake_bin),
+                    "DYLD_INSERT_LIBRARIES": "/outside/injected.dylib",
+                    "DYLD_LIBRARY_PATH": "/outside/dyld",
+                    "LD_PRELOAD": "/outside/preload.so",
+                    "LD_LIBRARY_PATH": "/outside/ld",
+                    "MAGIC": "/outside/magic",
+                    "CODESIGN_ALLOCATE": "/outside/codesign_allocate",
+                }
+            )
+
+            completed = subprocess.run(
+                [
+                    "/bin/sh",
                     SCRIPTS_DIR / "Build-Sidecar.sh",
                     "--print-plan",
                     "--target-triple",
@@ -437,23 +533,26 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
                 )
             return subprocess.CompletedProcess(command, 0, stdout, "")
 
-        with (
-            mock.patch.object(sidecar_builder, "_run", side_effect=fake_run),
-            self.assertRaisesRegex(
-                sidecar_builder.SidecarBuildError,
-                "non-system absolute dependency",
-            ),
-        ):
-            sidecar_builder._verify_macho_file(
-                Path("runtime.so"),
-                label="test native extension",
-                expected_architecture="arm64",
-                file_tool="file-tool",
-                lipo_tool="lipo-tool",
-                otool_tool="otool-tool",
-                environment={},
-                require_linked_library=False,
-            )
+        with tempfile.TemporaryDirectory(prefix="KORYAO Mach-O dependency ") as temporary:
+            runtime = Path(temporary) / "runtime.so"
+            self.write_thin_macho(runtime)
+            with (
+                mock.patch.object(sidecar_builder, "_run", side_effect=fake_run),
+                self.assertRaisesRegex(
+                    sidecar_builder.SidecarBuildError,
+                    "non-system absolute dependency",
+                ),
+            ):
+                sidecar_builder._verify_macho_file(
+                    runtime,
+                    label="test native extension",
+                    expected_architecture="arm64",
+                    file_tool="file-tool",
+                    lipo_tool="lipo-tool",
+                    otool_tool="otool-tool",
+                    environment={},
+                    require_linked_library=False,
+                )
 
     def test_macho_dependency_verifier_rejects_traversing_install_names(
         self,
@@ -465,47 +564,50 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
             "@executable_path/../private/libunsafe.dylib",
             "@rpath/../../private/libunsafe.dylib",
         )
-        for reference in unsafe_references:
-            with self.subTest(reference=reference):
+        with tempfile.TemporaryDirectory(prefix="KORYAO Mach-O traversal ") as temporary:
+            runtime = Path(temporary) / "runtime.so"
+            self.write_thin_macho(runtime)
+            for reference in unsafe_references:
+                with self.subTest(reference=reference):
 
-                def fake_run(
-                    arguments: object,
-                    unsafe_reference: str = reference,
-                    **_: object,
-                ) -> subprocess.CompletedProcess[str]:
-                    command = list(arguments)  # type: ignore[arg-type]
-                    if command[0] == "file-tool":
-                        stdout = "Mach-O 64-bit bundle arm64\n"
-                    elif command[0] == "lipo-tool":
-                        stdout = "arm64\n"
-                    elif command[1] == "-L":
-                        stdout = (
-                            "runtime.so:\n"
-                            f"\t{unsafe_reference} "
-                            "(compatibility version 1.0.0, current version 1.0.0)\n"
+                    def fake_run(
+                        arguments: object,
+                        unsafe_reference: str = reference,
+                        **_: object,
+                    ) -> subprocess.CompletedProcess[str]:
+                        command = list(arguments)  # type: ignore[arg-type]
+                        if command[0] == "file-tool":
+                            stdout = "Mach-O 64-bit bundle arm64\n"
+                        elif command[0] == "lipo-tool":
+                            stdout = "arm64\n"
+                        elif command[1] == "-L":
+                            stdout = (
+                                "runtime.so:\n"
+                                f"\t{unsafe_reference} "
+                                "(compatibility version 1.0.0, current version 1.0.0)\n"
+                            )
+                        else:
+                            stdout = "runtime.so:\n"
+                        return subprocess.CompletedProcess(command, 0, stdout, "")
+
+                    with (
+                        mock.patch.object(
+                            sidecar_builder,
+                            "_run",
+                            side_effect=fake_run,
+                        ),
+                        self.assertRaises(sidecar_builder.SidecarBuildError),
+                    ):
+                        sidecar_builder._verify_macho_file(
+                            runtime,
+                            label="test native extension",
+                            expected_architecture="arm64",
+                            file_tool="file-tool",
+                            lipo_tool="lipo-tool",
+                            otool_tool="otool-tool",
+                            environment={},
+                            require_linked_library=False,
                         )
-                    else:
-                        stdout = "runtime.so:\n"
-                    return subprocess.CompletedProcess(command, 0, stdout, "")
-
-                with (
-                    mock.patch.object(
-                        sidecar_builder,
-                        "_run",
-                        side_effect=fake_run,
-                    ),
-                    self.assertRaises(sidecar_builder.SidecarBuildError),
-                ):
-                    sidecar_builder._verify_macho_file(
-                        Path("runtime.so"),
-                        label="test native extension",
-                        expected_architecture="arm64",
-                        file_tool="file-tool",
-                        lipo_tool="lipo-tool",
-                        otool_tool="otool-tool",
-                        environment={},
-                        require_linked_library=False,
-                    )
 
     def test_macho_verifier_rejects_absolute_non_system_lc_rpath(self) -> None:
         def fake_run(
@@ -533,23 +635,26 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
                 )
             return subprocess.CompletedProcess(command, 0, stdout, "")
 
-        with (
-            mock.patch.object(sidecar_builder, "_run", side_effect=fake_run),
-            self.assertRaisesRegex(
-                sidecar_builder.SidecarBuildError,
-                "non-system absolute LC_RPATH",
-            ),
-        ):
-            sidecar_builder._verify_macho_file(
-                Path("runtime.so"),
-                label="test native extension",
-                expected_architecture="arm64",
-                file_tool="file-tool",
-                lipo_tool="lipo-tool",
-                otool_tool="otool-tool",
-                environment={},
-                require_linked_library=False,
-            )
+        with tempfile.TemporaryDirectory(prefix="KORYAO Mach-O rpath ") as temporary:
+            runtime = Path(temporary) / "runtime.so"
+            self.write_thin_macho(runtime)
+            with (
+                mock.patch.object(sidecar_builder, "_run", side_effect=fake_run),
+                self.assertRaisesRegex(
+                    sidecar_builder.SidecarBuildError,
+                    "non-system absolute LC_RPATH",
+                ),
+            ):
+                sidecar_builder._verify_macho_file(
+                    runtime,
+                    label="test native extension",
+                    expected_architecture="arm64",
+                    file_tool="file-tool",
+                    lipo_tool="lipo-tool",
+                    otool_tool="otool-tool",
+                    environment={},
+                    require_linked_library=False,
+                )
 
     def test_macho_rpath_parent_segments_must_remain_inside_bundle(self) -> None:
         safe_rpath = "@loader_path/../.."
@@ -559,7 +664,7 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
             support_root = pair_root / "_internal"
             native = support_root / "cv2" / ".dylibs" / "runtime.so"
             native.parent.mkdir(parents=True)
-            native.write_bytes(b"\xcf\xfa\xed\xfe")
+            self.write_thin_macho(native)
 
             def run_verifier(rpath: str) -> tuple[list[str], int, int]:
                 def fake_run(
@@ -685,6 +790,72 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
             ):
                 sidecar_builder.verify_staged_artifact(layout)
 
+    @unittest.skipUnless(sys.platform == "darwin", "Darwin system tooling required")
+    def test_verifier_ignores_fake_path_tools_and_rejects_non_macho(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="KORYAO fake Mach-O tools ") as temporary:
+            root = Path(temporary)
+            layout = self.make_layout_fixture(root / "repo")
+            layout.staged_support_directory.mkdir()
+            (layout.staged_support_directory / "runtime.so").write_bytes(b"arbitrary bytes")
+            layout.staged_executable.write_text(
+                "#!/bin/sh\n"
+                "printf '%s\\n' "
+                """'{"ok":true,"versions":{"vtracer":"0.6.15","skia-pathops":"0.9.2","svgpathtools":"1.7.2"}}'"""
+                "\n",
+                encoding="utf-8",
+            )
+            layout.staged_executable.chmod(0o755)
+
+            fake_bin = root / "fake-bin"
+            fake_bin.mkdir()
+            trace = root / "fake-tool.trace"
+            for name, output in (
+                ("file", "Mach-O 64-bit executable arm64"),
+                ("lipo", "arm64"),
+                ("otool", "/usr/lib/libSystem.B.dylib"),
+            ):
+                tool = fake_bin / name
+                tool.write_text(
+                    "#!/bin/sh\n"
+                    f"printf {name!r} >> {os.fspath(trace)!r}\n"
+                    f"printf '%s\\n' {output!r}\n",
+                    encoding="utf-8",
+                )
+                tool.chmod(0o755)
+
+            with (
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        "PATH": os.fspath(fake_bin),
+                        "DYLD_INSERT_LIBRARIES": "/outside/injected.dylib",
+                        "LD_PRELOAD": "/outside/preload.so",
+                    },
+                    clear=False,
+                ),
+                self.assertRaisesRegex(
+                    sidecar_builder.SidecarBuildError,
+                    "not a thin little-endian 64-bit Mach-O",
+                ),
+            ):
+                sidecar_builder.verify_staged_artifact(layout)
+            self.assertFalse(trace.exists())
+
+    @unittest.skipUnless(sys.platform == "darwin", "Darwin system tooling required")
+    def test_required_verification_tools_are_fixed_system_paths(self) -> None:
+        with mock.patch.dict(os.environ, {"PATH": "/outside/fake-bin"}, clear=False):
+            for name in ("file", "lipo", "otool"):
+                with self.subTest(name=name):
+                    self.assertEqual(
+                        f"/usr/bin/{name}",
+                        sidecar_builder._required_tool(name),
+                    )
+        with self.assertRaisesRegex(
+            sidecar_builder.SidecarBuildError,
+            "Unsupported Darwin artifact verification tool",
+        ):
+            sidecar_builder._required_tool("future-tool")
+
     def test_safe_exact_svg_and_zero_difference_report_are_read_from_disk(
         self,
     ) -> None:
@@ -702,6 +873,415 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
             self.assertEqual(0, evidence["embedded_raster_count"])
             self.assertEqual(0, evidence["external_reference_count"])
             self.assertTrue(evidence["pixel_match"])
+
+    @unittest.skipIf(os.name == "nt", "file-backed process capture requires POSIX")
+    def test_post_ready_stdout_and_stderr_leaks_fail_closed(self) -> None:
+        cases = (
+            ("credential-stdout", "STARBRIDGE_SESSION_TOKEN", "1", False),
+            ("credential-stderr", "STARBRIDGE_SESSION_TOKEN", "2", False),
+            ("path-stdout", "STARBRIDGE_APP_DATA_DIR", "1", False),
+            ("path-stderr", "STARBRIDGE_APP_DATA_DIR", "2", False),
+            ("json-path-stdout", "STARBRIDGE_APP_DATA_DIR", "1", True),
+            ("json-path-stderr", "STARBRIDGE_APP_DATA_DIR", "2", True),
+        )
+        for stage, variable, descriptor, escape_slashes in cases:
+            with (
+                self.subTest(stage=stage),
+                tempfile.TemporaryDirectory(prefix="KORYAO post-ready leak ") as temporary,
+            ):
+                root = Path(temporary)
+                data_root = root / "private app data"
+                data_root.mkdir()
+                credential = "post-ready-secret-token"
+                fixture = root / f"{stage}.sh"
+                leak_command = f"printf '%s\\n' \"${variable}\""
+                if escape_slashes:
+                    leak_command += " | /usr/bin/sed 's#/#\\\\/#g'"
+                fixture.write_text(
+                    "#!/bin/sh\n"
+                    "printf 'STARBRIDGE_READY "
+                    '{"host":"127.0.0.1","port":4567,"pid":%s,'
+                    '"session_required":true}\\n\' "$$"\n'
+                    "/bin/sleep 1\n"
+                    f"{leak_command} >&{descriptor}\n",
+                    encoding="utf-8",
+                )
+                fixture.chmod(0o755)
+                audit = sidecar_tester.OutputAudit()
+                audit.register(
+                    credentials=(credential,),
+                    private_paths=(root, data_root),
+                )
+                capture = sidecar_tester._spawn_sidecar(
+                    fixture,
+                    data_root,
+                    credential=credential,
+                    parent_pid=os.getpid(),
+                    capture_root=root,
+                    stage=stage,
+                )
+                try:
+                    ready = sidecar_tester._wait_ready(
+                        capture,
+                        audit=audit,
+                        timeout=10,
+                        stage=stage,
+                    )
+                    self.assertEqual(4567, ready["port"])
+                    self.assertEqual(0, capture.process.wait(timeout=5))
+                    with self.assertRaises(sidecar_tester.SidecarTestError) as raised:
+                        sidecar_tester._audit_captured_process(capture, audit)
+                    message = str(raised.exception)
+                    self.assertNotIn(credential, message)
+                    self.assertNotIn(os.fspath(data_root), message)
+                finally:
+                    sidecar_tester._terminate(capture)
+
+    def test_every_http_payload_stage_rejects_credentials_and_private_paths(
+        self,
+    ) -> None:
+        stages = (
+            "primary health",
+            "wrong-credential bootstrap",
+            "authenticated bootstrap",
+            "initial connections",
+            "paired connections",
+            "vector selection",
+            "vector job start",
+            "exact-vector job poll",
+            "primary shutdown",
+            "released-port health",
+            "released-port shutdown",
+        )
+
+        class FakeResponse:
+            status = 200
+
+            def __init__(self, payload: bytes) -> None:
+                self.payload = payload
+
+            def read(self) -> bytes:
+                return self.payload
+
+        class FakeConnection:
+            def __init__(self, payload: bytes) -> None:
+                self.response = FakeResponse(payload)
+
+            def request(self, *_: object, **__: object) -> None:
+                return None
+
+            def getresponse(self) -> FakeResponse:
+                return self.response
+
+            def close(self) -> None:
+                return None
+
+        with tempfile.TemporaryDirectory(prefix="KORYAO HTTP audit ") as temporary:
+            private_path = Path(temporary) / "private app data"
+            credential = "http-response-secret"
+            for stage in stages:
+                for leak in (credential, os.fspath(private_path.resolve())):
+                    with self.subTest(
+                        stage=stage, leak="credential" if leak == credential else "path"
+                    ):
+                        audit = sidecar_tester.OutputAudit()
+                        audit.register(
+                            credentials=(credential,),
+                            private_paths=(private_path,),
+                        )
+                        payload = json.dumps({"leak": leak}).encode("utf-8")
+                        with (
+                            mock.patch.object(
+                                sidecar_tester.http.client,
+                                "HTTPConnection",
+                                return_value=FakeConnection(payload),
+                            ),
+                            self.assertRaises(sidecar_tester.SidecarTestError) as raised,
+                        ):
+                            sidecar_tester._expect_status(
+                                4567,
+                                "GET",
+                                "/fixture",
+                                200,
+                                audit=audit,
+                                stage=stage,
+                            )
+                        self.assertNotIn(leak, str(raised.exception))
+
+            encoded_leaks = (
+                private_path.resolve().as_uri(),
+                sidecar_tester.urllib.parse.quote(
+                    os.fspath(private_path.resolve()),
+                    safe="/:",
+                ),
+                sidecar_tester.urllib.parse.quote(
+                    os.fspath(private_path.resolve()),
+                    safe="",
+                ),
+                os.fspath(private_path.resolve()).replace("/", r"\/"),
+                sidecar_tester.PERCENT_ESCAPE_PATTERN.sub(
+                    lambda match: match.group(0).lower(),
+                    sidecar_tester.urllib.parse.quote(
+                        os.fspath(private_path.resolve()),
+                        safe="",
+                    ),
+                ),
+            )
+            for leak in encoded_leaks:
+                audit = sidecar_tester.OutputAudit()
+                audit.register(private_paths=(private_path,))
+                payload = json.dumps({"leak": leak}).encode("utf-8")
+                with (
+                    mock.patch.object(
+                        sidecar_tester.http.client,
+                        "HTTPConnection",
+                        return_value=FakeConnection(payload),
+                    ),
+                    self.assertRaises(sidecar_tester.SidecarTestError),
+                ):
+                    sidecar_tester._expect_status(
+                        4567,
+                        "GET",
+                        "/fixture",
+                        200,
+                        audit=audit,
+                        stage="encoded path fixture",
+                    )
+
+            audit = sidecar_tester.OutputAudit()
+            audit.register(credentials=(credential,))
+            with (
+                mock.patch.object(
+                    sidecar_tester.http.client,
+                    "HTTPConnection",
+                    return_value=FakeConnection(f"not-json {credential}".encode()),
+                ),
+                self.assertRaisesRegex(
+                    sidecar_tester.SidecarTestError,
+                    "session credential",
+                ),
+            ):
+                sidecar_tester._expect_status(
+                    4567,
+                    "GET",
+                    "/fixture",
+                    200,
+                    audit=audit,
+                    stage="non-JSON fixture",
+                )
+
+    def test_mcp_pairing_audits_complete_stdout_and_stderr(self) -> None:
+        response = '{"jsonrpc":"2.0","id":1,"result":{"structuredContent":{"ok":true}}}\n'
+        with tempfile.TemporaryDirectory(prefix="KORYAO MCP audit ") as temporary:
+            data_root = Path(temporary) / "private app data"
+            credential = "mcp-output-secret"
+            cases = (
+                (response + credential, "", credential),
+                (response, os.fspath(data_root.resolve()), os.fspath(data_root.resolve())),
+            )
+            for stdout, stderr, leaked in cases:
+                with self.subTest(channel="stdout" if stderr == "" else "stderr"):
+                    audit = sidecar_tester.OutputAudit()
+                    audit.register(
+                        credentials=(credential,),
+                        private_paths=(data_root,),
+                    )
+                    completed = subprocess.CompletedProcess(
+                        ["/fixture", "--mcp"],
+                        0,
+                        stdout,
+                        stderr,
+                    )
+                    with (
+                        mock.patch.object(
+                            sidecar_tester.subprocess,
+                            "run",
+                            return_value=completed,
+                        ),
+                        self.assertRaises(sidecar_tester.SidecarTestError) as raised,
+                    ):
+                        sidecar_tester._pair_desktop_session(
+                            Path("/fixture"),
+                            data_root,
+                            data_root / "codex home",
+                            "PAIRCODE",
+                            timeout=1,
+                            audit=audit,
+                        )
+                    self.assertNotIn(leaked, str(raised.exception))
+
+    def test_mcp_pairing_replaces_inherited_runtime_environment(self) -> None:
+        response = '{"jsonrpc":"2.0","id":1,"result":{"structuredContent":{"ok":true}}}\n'
+        with tempfile.TemporaryDirectory(prefix="KORYAO MCP environment ") as temporary:
+            data_root = Path(temporary) / "private app data"
+            codex_home = Path(temporary) / "controlled codex home"
+            audit = sidecar_tester.OutputAudit()
+            completed = subprocess.CompletedProcess(
+                ["/fixture", "--mcp"],
+                0,
+                response,
+                "",
+            )
+            with (
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        "STARBRIDGE_SESSION_TOKEN": "inherited-secret",
+                        "STARBRIDGE_APP_DATA_DIR": "/outside/app-data",
+                        "CODEX_HOME": "/outside/codex-home",
+                    },
+                    clear=False,
+                ),
+                mock.patch.object(
+                    sidecar_tester.subprocess,
+                    "run",
+                    return_value=completed,
+                ) as run,
+            ):
+                sidecar_tester._pair_desktop_session(
+                    Path("/fixture"),
+                    data_root,
+                    codex_home,
+                    "PAIRCODE",
+                    timeout=1,
+                    audit=audit,
+                )
+
+            environment = run.call_args.kwargs["env"]
+            self.assertNotIn("STARBRIDGE_SESSION_TOKEN", environment)
+            self.assertEqual(os.fspath(data_root), environment["STARBRIDGE_APP_DATA_DIR"])
+            self.assertEqual(os.fspath(codex_home), environment["CODEX_HOME"])
+
+    def test_mcp_timeout_output_is_audited_without_error_echo(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="KORYAO MCP timeout ") as temporary:
+            data_root = Path(temporary) / "private app data"
+            credential = "mcp-timeout-secret"
+            cases: tuple[tuple[str | bytes, str | bytes, str], ...] = (
+                (credential.encode(), b"", credential),
+                (b"", os.fspath(data_root.resolve()), os.fspath(data_root.resolve())),
+            )
+            for stdout, stderr, leaked in cases:
+                with self.subTest(channel="stdout" if stdout else "stderr"):
+                    audit = sidecar_tester.OutputAudit()
+                    audit.register(
+                        credentials=(credential,),
+                        private_paths=(data_root,),
+                    )
+                    timeout_error = subprocess.TimeoutExpired(
+                        cmd=["/fixture", "--mcp"],
+                        timeout=1,
+                        output=stdout,
+                        stderr=stderr,
+                    )
+                    with (
+                        mock.patch.object(
+                            sidecar_tester.subprocess,
+                            "run",
+                            side_effect=timeout_error,
+                        ),
+                        self.assertRaises(sidecar_tester.SidecarTestError) as raised,
+                    ):
+                        sidecar_tester._pair_desktop_session(
+                            Path("/fixture"),
+                            data_root,
+                            data_root / "codex home",
+                            "PAIRCODE",
+                            timeout=1,
+                            audit=audit,
+                        )
+                    self.assertNotIn(leaked, str(raised.exception))
+                    self.assertTrue(audit.credential_exposed or audit.controlled_path_exposed)
+
+    def test_parent_exit_audits_child_logs_after_process_exit(self) -> None:
+        credential = "parent-child-secret"
+        with tempfile.TemporaryDirectory(prefix="KORYAO parent log audit ") as temporary:
+            temporary_root = Path(temporary)
+
+            def fake_run(arguments: object, **_: object) -> subprocess.CompletedProcess[str]:
+                command = list(arguments)  # type: ignore[arg-type]
+                data_root = Path(command[command.index("--data-root") + 1])
+                probe_file = Path(command[command.index("--probe-file") + 1])
+                data_root.mkdir(parents=True)
+                (data_root / "parent child stdout.log").write_text(
+                    credential,
+                    encoding="utf-8",
+                )
+                (data_root / "parent child stderr.log").write_text("", encoding="utf-8")
+                probe_file.write_text(
+                    json.dumps({"pid": 424242, "port": 4567}),
+                    encoding="utf-8",
+                )
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            audit = sidecar_tester.OutputAudit()
+            with (
+                mock.patch.object(
+                    sidecar_tester.secrets,
+                    "token_hex",
+                    return_value=credential,
+                ),
+                mock.patch.object(
+                    sidecar_tester.subprocess,
+                    "run",
+                    side_effect=fake_run,
+                ),
+                mock.patch.object(sidecar_tester, "_process_exists", return_value=False),
+                mock.patch.object(sidecar_tester, "_assert_port_released"),
+                self.assertRaises(sidecar_tester.SidecarTestError) as raised,
+            ):
+                sidecar_tester._verify_parent_exit(
+                    Path("/fixture"),
+                    temporary_root,
+                    startup_timeout=1,
+                    audit=audit,
+                )
+            self.assertNotIn(credential, str(raised.exception))
+
+    def test_parent_exit_timeout_output_is_audited_without_command_echo(self) -> None:
+        credential = "parent-timeout-secret"
+        with tempfile.TemporaryDirectory(prefix="KORYAO parent timeout ") as temporary:
+            temporary_root = Path(temporary)
+            private_path = temporary_root / "parent exit app data"
+            cases: tuple[tuple[str | bytes, str | bytes, str], ...] = (
+                (credential, "", credential),
+                ("", os.fspath(private_path.resolve()), os.fspath(private_path.resolve())),
+            )
+            for stdout, stderr, leaked in cases:
+                with self.subTest(channel="stdout" if stdout else "stderr"):
+                    audit = sidecar_tester.OutputAudit()
+                    timeout_error = subprocess.TimeoutExpired(
+                        cmd=[
+                            "/private/python",
+                            "--data-root",
+                            os.fspath(private_path),
+                        ],
+                        timeout=1,
+                        output=stdout,
+                        stderr=stderr,
+                    )
+                    with (
+                        mock.patch.object(
+                            sidecar_tester.secrets,
+                            "token_hex",
+                            return_value=credential,
+                        ),
+                        mock.patch.object(
+                            sidecar_tester.subprocess,
+                            "run",
+                            side_effect=timeout_error,
+                        ),
+                        self.assertRaises(sidecar_tester.SidecarTestError) as raised,
+                    ):
+                        sidecar_tester._verify_parent_exit(
+                            Path("/fixture"),
+                            temporary_root,
+                            startup_timeout=1,
+                            audit=audit,
+                        )
+                    message = str(raised.exception)
+                    self.assertNotIn(leaked, message)
+                    self.assertNotIn(os.fspath(temporary_root), message)
+                    self.assertTrue(audit.credential_exposed or audit.controlled_path_exposed)
 
     def test_exact_svg_rejects_raster_script_and_external_references(self) -> None:
         unsafe_svgs = {
@@ -843,11 +1423,14 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
                     "poll response exposed a private absolute path",
                 ),
             ):
+                audit = sidecar_tester.OutputAudit()
+                audit.register(private_paths=(data_root,))
                 sidecar_tester._verify_exact_svg(
                     4567,
                     "credential",
                     data_root,
                     timeout=1,
+                    audit=audit,
                 )
 
     @unittest.skipIf(os.name == "nt", "POSIX wrapper checks do not run on Windows")

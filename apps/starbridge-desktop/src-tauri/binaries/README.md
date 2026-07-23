@@ -35,8 +35,11 @@ triple 的 build root 后执行 `--clean`。同一 triple 的构建/staging 使�
 binaries、build 或 build venv 旁出现同步/冲突编号副本时 fail closed，不复用陈旧
 Analysis 或混入另一平台产物。
 
-本阶段已用 Tauri v2 schema 与已安装的 Tauri CLI 解析 macOS overlay/resource glob；
-这只证明配置入口有效，不代表真实 `.app` 内 `Contents/MacOS`、`Contents/Resources`
-布局或应用内 sidecar 启动已经验证。后两项属于 Stage 5，不在本阶段冒充完成。
+Tauri v2 的 `externalBin` 会把可执行文件复制到目标目录根，而 list resource glob
+会保留 `binaries/` 前缀，无法把动态 triple 的完整 PyInstaller support 树映射到
+可执行文件同级。为避免产生“配置可解析但运行必失败”的假阳性，macOS overlay 在
+Stage 4 明确保持 `bundle.active=false`，不声明 `externalBin` 或 `resources`。
+本阶段只验证 builder/staging 与直接 sidecar 协议；真实 Tauri dev/no-bundle、
+`.app` 布局及应用内启动属于 Stage 5，尚未验证。
 
 不要提交生成的可执行文件、`_internal*`、DLL/dylib、Python bytecode 或本机路径。

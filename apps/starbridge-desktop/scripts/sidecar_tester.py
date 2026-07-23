@@ -7,7 +7,6 @@ import json
 import os
 import re
 import secrets
-import selectors
 import signal
 import socket
 import stat
@@ -18,6 +17,7 @@ import time
 import urllib.parse
 import xml.etree.ElementTree as ET
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -45,10 +45,87 @@ PNG_1X1 = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 )
 CSS_URL_PATTERN = re.compile(r"url\(\s*([^)]+?)\s*\)", re.IGNORECASE)
+PERCENT_ESCAPE_PATTERN = re.compile(r"%[0-9A-Fa-f]{2}")
 
 
 class SidecarTestError(RuntimeError):
     pass
+
+
+def _audit_text_fragments(value: object) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, Mapping):
+        fragments: list[str] = []
+        for key, item in value.items():
+            fragments.extend(_audit_text_fragments(key))
+            fragments.extend(_audit_text_fragments(item))
+        return fragments
+    if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
+        fragments = []
+        for item in value:
+            fragments.extend(_audit_text_fragments(item))
+        return fragments
+    return [json.dumps(value, ensure_ascii=False, sort_keys=True)]
+
+
+@dataclass
+class OutputAudit:
+    credentials: set[str] = field(default_factory=set)
+    private_paths: set[Path] = field(default_factory=set)
+    stages: list[str] = field(default_factory=list)
+    credential_exposed: bool = False
+    controlled_path_exposed: bool = False
+
+    def register(
+        self,
+        *,
+        credentials: Sequence[str] = (),
+        private_paths: Sequence[Path] = (),
+    ) -> None:
+        self.credentials.update(value for value in credentials if value)
+        self.private_paths.update(Path(path) for path in private_paths)
+
+    def inspect(self, value: object, *, stage: str) -> None:
+        self.stages.append(stage)
+        for serialized in _audit_text_fragments(value):
+            if any(credential in serialized for credential in self.credentials):
+                self.credential_exposed = True
+                raise SidecarTestError(f"The {stage} exposed a session credential.")
+            try:
+                _assert_paths_redacted(
+                    serialized,
+                    tuple(self.private_paths),
+                    stage=stage,
+                )
+            except SidecarTestError:
+                self.controlled_path_exposed = True
+                raise SidecarTestError(f"The {stage} exposed a controlled private path.") from None
+
+    def evidence(self) -> dict[str, object]:
+        unique_stages = sorted(set(self.stages))
+        return {
+            "credential_exposed": self.credential_exposed,
+            "controlled_path_exposed": self.controlled_path_exposed,
+            "sensitive_output_redacted": not (
+                self.credential_exposed or self.controlled_path_exposed
+            ),
+            "sensitive_audit_stage_count": len(unique_stages),
+            "http_response_audit_count": sum(stage.startswith("HTTP ") for stage in unique_stages),
+            "ready_audit_count": sum(stage.startswith("READY ") for stage in unique_stages),
+            "process_stream_audit_count": sum(
+                stage.startswith("process ") for stage in unique_stages
+            ),
+        }
+
+
+@dataclass
+class CapturedProcess:
+    process: subprocess.Popen[bytes]
+    stdout_path: Path
+    stderr_path: Path
+    stage: str
+    audited: bool = False
 
 
 def _positive_timeout(value: str) -> float:
@@ -73,6 +150,8 @@ def _request_json(
     credential: str | None = None,
     body: Mapping[str, Any] | None = None,
     timeout: float = 10,
+    audit: OutputAudit,
+    stage: str,
 ) -> tuple[int, dict[str, Any]]:
     headers = {"Accept": "application/json"}
     payload: bytes | None = None
@@ -89,6 +168,10 @@ def _request_json(
         status = response.status
     finally:
         connection.close()
+    audit.inspect(
+        raw.decode("utf-8", errors="replace"),
+        stage=f"HTTP {stage}",
+    )
     try:
         decoded = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -97,6 +180,7 @@ def _request_json(
         ) from exc
     if not isinstance(decoded, dict):
         raise SidecarTestError(f"{method} {path} returned a non-object JSON response.")
+    audit.inspect(decoded, stage=f"HTTP {stage}")
     return status, decoded
 
 
@@ -109,6 +193,8 @@ def _expect_status(
     credential: str | None = None,
     body: Mapping[str, Any] | None = None,
     timeout: float = 10,
+    audit: OutputAudit,
+    stage: str,
 ) -> dict[str, Any]:
     status, payload = _request_json(
         port,
@@ -117,6 +203,8 @@ def _expect_status(
         credential=credential,
         body=body,
         timeout=timeout,
+        audit=audit,
+        stage=stage,
     )
     if status != expected:
         raise SidecarTestError(f"{method} {path} returned {status}; expected {expected}.")
@@ -145,7 +233,9 @@ def _spawn_sidecar(
     parent_pid: int,
     port: int = 0,
     codex_home: Path | None = None,
-) -> subprocess.Popen[str]:
+    capture_root: Path,
+    stage: str,
+) -> CapturedProcess:
     arguments = [
         os.fspath(executable),
         "--desktop",
@@ -154,58 +244,124 @@ def _spawn_sidecar(
     ]
     if port:
         arguments.extend(["--port", str(port)])
-    return subprocess.Popen(
-        arguments,
-        env=_sidecar_environment(
-            data_root,
-            credential=credential,
-            codex_home=codex_home,
-        ),
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        bufsize=1,
+    safe_stage = re.sub(r"[^A-Za-z0-9_.-]+", "-", stage).strip("-") or "sidecar"
+    suffix = secrets.token_hex(8)
+    stdout_path = capture_root / f"{safe_stage}-{suffix}.stdout.log"
+    stderr_path = capture_root / f"{safe_stage}-{suffix}.stderr.log"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        stdout_fd = os.open(stdout_path, flags, 0o600)
+    except OSError:
+        raise SidecarTestError("Could not create the sidecar stdout capture.") from None
+    try:
+        stderr_fd = os.open(stderr_path, flags, 0o600)
+    except OSError:
+        os.close(stdout_fd)
+        raise SidecarTestError("Could not create the sidecar stderr capture.") from None
+    try:
+        with os.fdopen(stdout_fd, "wb") as stdout, os.fdopen(stderr_fd, "wb") as stderr:
+            process = subprocess.Popen(
+                arguments,
+                env=_sidecar_environment(
+                    data_root,
+                    credential=credential,
+                    codex_home=codex_home,
+                ),
+                stdin=subprocess.DEVNULL,
+                stdout=stdout,
+                stderr=stderr,
+            )
+    except OSError:
+        raise SidecarTestError("The sidecar process could not be started.") from None
+    return CapturedProcess(
+        process=process,
+        stdout_path=stdout_path,
+        stderr_path=stderr_path,
+        stage=stage,
     )
 
 
-def _wait_ready(
-    process: subprocess.Popen[str],
+def _read_capture(path: Path) -> str:
+    try:
+        metadata = os.lstat(path)
+    except OSError:
+        raise SidecarTestError("A sidecar output capture is unavailable.") from None
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        raise SidecarTestError("A sidecar output capture is not a regular file.")
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        raise SidecarTestError("A sidecar output capture could not be read.") from None
+
+
+def _captured_output_text(value: str | bytes | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
+
+
+def _audit_optional_capture(
+    path: Path,
     *,
-    credential: str,
+    audit: OutputAudit,
+    stage: str,
+) -> None:
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        return
+    except OSError:
+        raise SidecarTestError("A sidecar output capture is unavailable.") from None
+    audit.inspect(_read_capture(path), stage=stage)
+
+
+def _audit_captured_process(capture: CapturedProcess, audit: OutputAudit) -> None:
+    if capture.audited:
+        return
+    if capture.process.poll() is None:
+        raise SidecarTestError("Refusing to audit a sidecar process that is still running.")
+    audit.inspect(
+        _read_capture(capture.stdout_path),
+        stage=f"process {capture.stage} stdout",
+    )
+    audit.inspect(
+        _read_capture(capture.stderr_path),
+        stage=f"process {capture.stage} stderr",
+    )
+    capture.audited = True
+
+
+def _wait_ready(
+    capture: CapturedProcess,
+    *,
+    audit: OutputAudit,
     timeout: float,
     stage: str,
 ) -> dict[str, Any]:
-    if process.stdout is None:
-        raise SidecarTestError("The sidecar stdout pipe is unavailable.")
-    selector = selectors.DefaultSelector()
-    selector.register(process.stdout, selectors.EVENT_READ)
+    process = capture.process
     deadline = time.monotonic() + timeout
-    try:
-        while time.monotonic() < deadline:
-            if process.poll() is not None:
-                stderr = process.stderr.read() if process.stderr is not None else ""
-                raise SidecarTestError(
-                    f"The {stage} sidecar exited before reporting ready"
-                    + (f": {stderr.splitlines()[-1]}" if stderr.strip() else ".")
-                )
-            remaining = max(0.0, deadline - time.monotonic())
-            if not selector.select(min(0.2, remaining)):
-                continue
-            line = process.stdout.readline().strip()
-            if not line:
-                continue
+    while time.monotonic() < deadline:
+        stdout = _read_capture(capture.stdout_path)
+        audit.inspect(stdout, stage=f"READY {stage} stdout")
+        complete_lines = stdout.splitlines()
+        if stdout and not stdout.endswith(("\n", "\r")):
+            complete_lines = complete_lines[:-1]
+        lines = [line.strip() for line in complete_lines if line.strip()]
+        if lines:
+            line = lines[0]
             if not line.startswith(READY_PREFIX):
                 raise SidecarTestError(f"The {stage} sidecar emitted an invalid ready line.")
-            if credential in line:
-                raise SidecarTestError("The ready line exposed the session credential.")
             try:
                 ready = json.loads(line[len(READY_PREFIX) :])
             except json.JSONDecodeError as exc:
                 raise SidecarTestError("The sidecar emitted invalid ready JSON.") from exc
             if not isinstance(ready, dict):
                 raise SidecarTestError("The sidecar ready payload is not an object.")
+            audit.inspect(ready, stage=f"READY {stage} payload")
             if (
                 ready.get("host") != "127.0.0.1"
                 or not isinstance(ready.get("port"), int)
@@ -215,14 +371,17 @@ def _wait_ready(
             ):
                 raise SidecarTestError("The sidecar ready PID/port/session contract failed.")
             return ready
-    finally:
-        selector.close()
+        if process.poll() is not None:
+            _audit_captured_process(capture, audit)
+            raise SidecarTestError(f"The {stage} sidecar exited before reporting ready.")
+        time.sleep(0.05)
     raise SidecarTestError(f"The {stage} sidecar did not report ready before the timeout.")
 
 
-def _terminate(process: subprocess.Popen[str] | None) -> None:
-    if process is None or process.poll() is not None:
+def _terminate(capture: CapturedProcess | None) -> None:
+    if capture is None or capture.process.poll() is not None:
         return
+    process = capture.process
     process.terminate()
     try:
         process.wait(timeout=5)
@@ -243,9 +402,11 @@ def _assert_port_released(port: int) -> None:
 def _pair_desktop_session(
     executable: Path,
     data_root: Path,
+    codex_home: Path,
     pairing_code: str,
     *,
     timeout: float,
+    audit: OutputAudit,
 ) -> None:
     request = {
         "jsonrpc": "2.0",
@@ -263,16 +424,32 @@ def _pair_desktop_session(
     }
     environment = sanitized_environment()
     environment[APP_DATA_ENV] = os.fspath(data_root)
-    completed = subprocess.run(
-        [executable, "--mcp"],
-        input=json.dumps(request, separators=(",", ":")) + "\n",
-        env=environment,
-        check=False,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        timeout=timeout,
-    )
+    environment["CODEX_HOME"] = os.fspath(codex_home)
+    try:
+        completed = subprocess.run(
+            [executable, "--mcp"],
+            input=json.dumps(request, separators=(",", ":")) + "\n",
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        audit.inspect(
+            _captured_output_text(exc.stdout),
+            stage="process MCP pairing stdout",
+        )
+        audit.inspect(
+            _captured_output_text(exc.stderr),
+            stage="process MCP pairing stderr",
+        )
+        raise SidecarTestError("The packaged MCP connector timed out.") from None
+    except OSError:
+        raise SidecarTestError("The packaged MCP connector could not be started.") from None
+    audit.inspect(completed.stdout, stage="process MCP pairing stdout")
+    audit.inspect(completed.stderr, stage="process MCP pairing stderr")
     if completed.returncode != 0:
         raise SidecarTestError("The packaged MCP connector failed to pair the desktop.")
     response: dict[str, Any] | None = None
@@ -284,6 +461,8 @@ def _pair_desktop_session(
         if isinstance(candidate, dict) and candidate.get("id") == 1:
             response = candidate
             break
+    if response is not None:
+        audit.inspect(response, stage="process MCP pairing response")
     structured = (
         response.get("result", {}).get("structuredContent", {}) if response is not None else {}
     )
@@ -300,17 +479,46 @@ def _assert_paths_redacted(
     serialized = (
         value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, sort_keys=True)
     )
+    normalized_percent_serialized = PERCENT_ESCAPE_PATTERN.sub(
+        lambda match: match.group(0).upper(),
+        serialized,
+    )
     for private_path in private_paths:
+        absolute = Path(os.path.abspath(os.fspath(private_path)))
         resolved = private_path.resolve()
-        raw = os.fspath(resolved)
-        representations = {
-            raw,
-            resolved.as_uri(),
-            urllib.parse.quote(raw, safe="/:"),
-            urllib.parse.quote(raw, safe=""),
-        }
+        literal_representations: set[str] = set()
+        percent_representations: set[str] = set()
+        for candidate in (absolute, resolved):
+            raw = os.fspath(candidate)
+            uri = candidate.as_uri()
+            literal_representations.update(
+                {
+                    raw,
+                    raw.replace("/", r"\/"),
+                }
+            )
+            for encoded in (
+                uri,
+                urllib.parse.quote(raw, safe="/:"),
+                urllib.parse.quote(raw, safe=""),
+            ):
+                percent_representations.update(
+                    {
+                        encoded,
+                        encoded.replace("/", r"\/"),
+                    }
+                )
         if any(
-            representation and representation in serialized for representation in representations
+            representation and representation in serialized
+            for representation in literal_representations
+        ) or any(
+            representation
+            and PERCENT_ESCAPE_PATTERN.sub(
+                lambda match: match.group(0).upper(),
+                representation,
+            )
+            in normalized_percent_serialized
+            for representation in percent_representations
         ):
             raise SidecarTestError(f"The {stage} exposed a private absolute path.")
 
@@ -324,6 +532,8 @@ def _validate_exact_artifacts(
     output_root: Path,
     data_root: Path,
     source: Path,
+    *,
+    audit: OutputAudit | None = None,
 ) -> dict[str, object]:
     svg_paths = sorted(output_root.rglob("vector.svg"))
     if len(svg_paths) != 1:
@@ -353,6 +563,8 @@ def _validate_exact_artifacts(
             ) from exc
 
     svg_text = svg_path.read_text(encoding="utf-8")
+    if audit is not None:
+        audit.inspect(svg_text, stage="exact SVG artifact")
     _assert_paths_redacted(
         svg_text,
         (data_root, source),
@@ -390,6 +602,8 @@ def _validate_exact_artifacts(
                 raise SidecarTestError("The exact SVG contains an external reference.")
 
     report_text = report_path.read_text(encoding="utf-8")
+    if audit is not None:
+        audit.inspect(report_text, stage="exact vector report artifact")
     _assert_paths_redacted(
         report_text,
         (data_root, source),
@@ -445,9 +659,11 @@ def _verify_exact_svg(
     data_root: Path,
     *,
     timeout: float,
+    audit: OutputAudit,
 ) -> dict[str, object]:
     source = data_root / "community vector source.png"
     source.write_bytes(PNG_1X1)
+    audit.register(private_paths=(source,))
     selection = _expect_status(
         port,
         "POST",
@@ -456,6 +672,8 @@ def _verify_exact_svg(
         credential=credential,
         body={"input_path": os.fspath(source)},
         timeout=timeout,
+        audit=audit,
+        stage="vector selection",
     )
     selection_id = selection.get("data", {}).get("selectionId")
     if selection.get("ok") is not True or not selection_id:
@@ -481,6 +699,8 @@ def _verify_exact_svg(
             "confirm_export": True,
         },
         timeout=timeout,
+        audit=audit,
+        stage="vector job start",
     )
     job_id = started.get("data", {}).get("jobId")
     if started.get("ok") is not True or not job_id:
@@ -501,6 +721,8 @@ def _verify_exact_svg(
             200,
             credential=credential,
             timeout=timeout,
+            audit=audit,
+            stage="exact-vector job poll",
         )
         _assert_paths_redacted(
             completed,
@@ -521,7 +743,12 @@ def _verify_exact_svg(
         stage="exact-vector completion response",
     )
     output_root = data_root / "data" / "vectorization"
-    return _validate_exact_artifacts(output_root, data_root, source)
+    return _validate_exact_artifacts(
+        output_root,
+        data_root,
+        source,
+        audit=audit,
+    )
 
 
 def _verify_primary_contract(
@@ -530,38 +757,56 @@ def _verify_primary_contract(
     *,
     startup_timeout: float,
     requested_port: int,
+    audit: OutputAudit,
 ) -> dict[str, Any]:
     data_root = temporary_root / "primary app data"
     codex_home = temporary_root / "codex home"
     data_root.mkdir(parents=True)
     credential = secrets.token_hex(32)
-    process = _spawn_sidecar(
+    audit.register(
+        credentials=(credential,),
+        private_paths=(temporary_root, data_root, codex_home),
+    )
+    capture = _spawn_sidecar(
         executable,
         data_root,
         credential=credential,
         parent_pid=os.getpid(),
         port=requested_port,
         codex_home=codex_home,
+        capture_root=temporary_root,
+        stage="primary",
     )
     ready: dict[str, Any] | None = None
     try:
         ready = _wait_ready(
-            process,
-            credential=credential,
+            capture,
+            audit=audit,
             timeout=startup_timeout,
             stage="primary",
         )
         port = int(ready["port"])
-        health = _expect_status(port, "GET", "/api/health", 200)
+        health = _expect_status(
+            port,
+            "GET",
+            "/api/health",
+            200,
+            audit=audit,
+            stage="primary health",
+        )
         if health.get("ok") is not True:
             raise SidecarTestError("The public loopback health check failed.")
 
+        wrong_credential = secrets.token_hex(32)
+        audit.register(credentials=(wrong_credential,))
         _expect_status(
             port,
             "GET",
             "/api/bootstrap",
             403,
-            credential=secrets.token_hex(32),
+            credential=wrong_credential,
+            audit=audit,
+            stage="wrong-credential bootstrap",
         )
         bootstrap = _expect_status(
             port,
@@ -569,6 +814,8 @@ def _verify_primary_contract(
             "/api/bootstrap",
             200,
             credential=credential,
+            audit=audit,
+            stage="authenticated bootstrap",
         )
         if bootstrap.get("ok") is not True:
             raise SidecarTestError("The authenticated bootstrap request failed.")
@@ -579,6 +826,8 @@ def _verify_primary_contract(
             "/api/connections",
             200,
             credential=credential,
+            audit=audit,
+            stage="initial connections",
         )
         connection_data = connections.get("data", {})
         if connection_data.get("drawing_enabled") is not False:
@@ -595,8 +844,10 @@ def _verify_primary_contract(
         _pair_desktop_session(
             executable,
             data_root,
+            codex_home,
             pairing_code,
             timeout=startup_timeout,
+            audit=audit,
         )
         paired = _expect_status(
             port,
@@ -604,6 +855,8 @@ def _verify_primary_contract(
             "/api/connections",
             200,
             credential=credential,
+            audit=audit,
+            stage="paired connections",
         )
         if paired.get("data", {}).get("drawing_enabled") is not True:
             raise SidecarTestError("Valid Codex pairing did not unlock vectorization.")
@@ -613,6 +866,7 @@ def _verify_primary_contract(
             credential,
             data_root,
             timeout=startup_timeout,
+            audit=audit,
         )
         _expect_status(
             port,
@@ -621,22 +875,23 @@ def _verify_primary_contract(
             202,
             credential=credential,
             body={},
+            audit=audit,
+            stage="primary shutdown",
         )
         try:
-            return_code = process.wait(timeout=10)
+            return_code = capture.process.wait(timeout=10)
         except subprocess.TimeoutExpired as exc:
             raise SidecarTestError(
                 "The sidecar did not exit after authenticated shutdown."
             ) from exc
         if return_code != 0:
             raise SidecarTestError(f"The sidecar exited with code {return_code} after shutdown.")
-        stderr = process.stderr.read() if process.stderr is not None else ""
-        if credential in stderr:
-            raise SidecarTestError("The sidecar exposed its credential on stderr.")
+        _audit_captured_process(capture, audit)
         _assert_port_released(port)
         return {**ready, "exact_artifact": exact_evidence}
     finally:
-        _terminate(process)
+        _terminate(capture)
+        _audit_captured_process(capture, audit)
         if ready is not None:
             _assert_port_released(int(ready["port"]))
 
@@ -646,6 +901,7 @@ def _verify_occupied_port_recovery(
     temporary_root: Path,
     *,
     startup_timeout: float,
+    audit: OutputAudit,
 ) -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as occupied:
         occupied.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -655,49 +911,71 @@ def _verify_occupied_port_recovery(
         credential = secrets.token_hex(32)
         data_root = temporary_root / "occupied port app data"
         data_root.mkdir(parents=True)
-        process = _spawn_sidecar(
+        audit.register(
+            credentials=(credential,),
+            private_paths=(data_root,),
+        )
+        capture = _spawn_sidecar(
             executable,
             data_root,
             credential=credential,
             parent_pid=os.getpid(),
             port=port,
+            codex_home=data_root / "codex home",
+            capture_root=temporary_root,
+            stage="occupied-port",
         )
         try:
             try:
-                stdout, stderr = process.communicate(timeout=startup_timeout)
+                capture.process.wait(timeout=startup_timeout)
             except subprocess.TimeoutExpired as exc:
                 raise SidecarTestError(
                     "The sidecar did not fail closed on an occupied port."
                 ) from exc
-            if process.returncode == 0:
+            _audit_captured_process(capture, audit)
+            if capture.process.returncode == 0:
                 raise SidecarTestError("The occupied-port sidecar reported success.")
+            stdout = _read_capture(capture.stdout_path)
             if READY_PREFIX in stdout:
                 raise SidecarTestError("The occupied-port sidecar reported ready.")
-            if credential in stdout or credential in stderr:
-                raise SidecarTestError("The occupied-port failure exposed the session credential.")
         finally:
-            _terminate(process)
+            _terminate(capture)
+            _audit_captured_process(capture, audit)
 
     retry_root = temporary_root / "released port retry app data"
     retry_root.mkdir(parents=True)
     credential = secrets.token_hex(32)
+    audit.register(
+        credentials=(credential,),
+        private_paths=(retry_root,),
+    )
     retry = _spawn_sidecar(
         executable,
         retry_root,
         credential=credential,
         parent_pid=os.getpid(),
         port=port,
+        codex_home=retry_root / "codex home",
+        capture_root=temporary_root,
+        stage="released-port-retry",
     )
     try:
         ready = _wait_ready(
             retry,
-            credential=credential,
+            audit=audit,
             timeout=startup_timeout,
             stage="released-port retry",
         )
         if ready.get("port") != port:
             raise SidecarTestError("The released-port retry bound the wrong port.")
-        _expect_status(port, "GET", "/api/health", 200)
+        _expect_status(
+            port,
+            "GET",
+            "/api/health",
+            200,
+            audit=audit,
+            stage="released-port health",
+        )
         _expect_status(
             port,
             "POST",
@@ -705,11 +983,19 @@ def _verify_occupied_port_recovery(
             202,
             credential=credential,
             body={},
+            audit=audit,
+            stage="released-port shutdown",
         )
-        if retry.wait(timeout=10) != 0:
+        try:
+            return_code = retry.process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            raise SidecarTestError("The released-port retry did not stop cleanly.") from None
+        if return_code != 0:
             raise SidecarTestError("The released-port retry did not stop cleanly.")
+        _audit_captured_process(retry, audit)
     finally:
         _terminate(retry)
+        _audit_captured_process(retry, audit)
         _assert_port_released(port)
     return port
 
@@ -734,7 +1020,9 @@ def _parent_probe(
     data_root.mkdir(parents=True, exist_ok=True)
     stdout_path = data_root / "parent child stdout.log"
     stderr_path = data_root / "parent child stderr.log"
-    credential = secrets.token_hex(32)
+    credential = os.environ.get(SESSION_ENV)
+    if not credential:
+        raise SidecarTestError("The parent-exit helper did not receive a session credential.")
     process: subprocess.Popen[bytes] | None = None
     try:
         with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
@@ -745,7 +1033,11 @@ def _parent_probe(
                     "--parent-pid",
                     str(os.getpid()),
                 ],
-                env=_sidecar_environment(data_root, credential=credential),
+                env=_sidecar_environment(
+                    data_root,
+                    credential=credential,
+                    codex_home=data_root / "codex home",
+                ),
                 stdin=subprocess.DEVNULL,
                 stdout=stdout,
                 stderr=stderr,
@@ -791,34 +1083,81 @@ def _verify_parent_exit(
     temporary_root: Path,
     *,
     startup_timeout: float,
+    audit: OutputAudit,
 ) -> tuple[int, int]:
     data_root = temporary_root / "parent exit app data"
     probe_file = temporary_root / "parent exit probe.json"
-    completed = subprocess.run(
-        [
-            sys.executable,
-            "-I",
-            Path(__file__).resolve(),
-            "--parent-probe",
-            "--executable",
-            executable,
-            "--data-root",
-            data_root,
-            "--probe-file",
-            probe_file,
-            "--startup-timeout",
-            str(startup_timeout),
-        ],
-        env=sanitized_environment(),
-        check=False,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        timeout=startup_timeout + 5,
+    credential = secrets.token_hex(32)
+    audit.register(
+        credentials=(credential,),
+        private_paths=(data_root, probe_file),
     )
+    helper_environment = sanitized_environment()
+    helper_environment[SESSION_ENV] = credential
+    stdout_path = data_root / "parent child stdout.log"
+    stderr_path = data_root / "parent child stderr.log"
+    try:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                Path(__file__).resolve(),
+                "--parent-probe",
+                "--executable",
+                executable,
+                "--data-root",
+                data_root,
+                "--probe-file",
+                probe_file,
+                "--startup-timeout",
+                str(startup_timeout),
+            ],
+            env=helper_environment,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=startup_timeout + 5,
+        )
+    except subprocess.TimeoutExpired as exc:
+        audit.inspect(
+            _captured_output_text(exc.stdout),
+            stage="process parent-exit helper stdout",
+        )
+        audit.inspect(
+            _captured_output_text(exc.stderr),
+            stage="process parent-exit helper stderr",
+        )
+        _audit_optional_capture(
+            stdout_path,
+            audit=audit,
+            stage="process parent-exit child stdout",
+        )
+        _audit_optional_capture(
+            stderr_path,
+            audit=audit,
+            stage="process parent-exit child stderr",
+        )
+        raise SidecarTestError("The parent-exit helper timed out.") from None
+    except OSError:
+        raise SidecarTestError("The parent-exit helper could not be started.") from None
+    audit.inspect(completed.stdout, stage="process parent-exit helper stdout")
+    audit.inspect(completed.stderr, stage="process parent-exit helper stderr")
     if completed.returncode != 0 or not probe_file.is_file():
+        _audit_optional_capture(
+            stdout_path,
+            audit=audit,
+            stage="process parent-exit child stdout",
+        )
+        _audit_optional_capture(
+            stderr_path,
+            audit=audit,
+            stage="process parent-exit child stderr",
+        )
         raise SidecarTestError("The parent-exit helper did not produce a probe.")
-    probe = json.loads(probe_file.read_text(encoding="utf-8"))
+    probe_text = probe_file.read_text(encoding="utf-8")
+    audit.inspect(probe_text, stage="process parent-exit probe")
+    probe = json.loads(probe_text)
     pid = int(probe["pid"])
     port = int(probe["port"])
     deadline = time.monotonic() + 12
@@ -829,6 +1168,14 @@ def _verify_parent_exit(
             except SidecarTestError:
                 time.sleep(0.1)
                 continue
+            audit.inspect(
+                _read_capture(stdout_path),
+                stage="process parent-exit child stdout",
+            )
+            audit.inspect(
+                _read_capture(stderr_path),
+                stage="process parent-exit child stderr",
+            )
             return pid, port
         time.sleep(0.1)
     if _process_exists(pid):
@@ -836,6 +1183,16 @@ def _verify_parent_exit(
             os.kill(pid, signal.SIGTERM)
         except ProcessLookupError:
             pass
+    if stdout_path.is_file():
+        audit.inspect(
+            _read_capture(stdout_path),
+            stage="process parent-exit child stdout",
+        )
+    if stderr_path.is_file():
+        audit.inspect(
+            _read_capture(stderr_path),
+            stage="process parent-exit child stderr",
+        )
     raise SidecarTestError("The sidecar remained alive after its parent exited.")
 
 
@@ -849,6 +1206,8 @@ def verify_sidecar(
     runtime = check_vector60_runtime(executable)
     with tempfile.TemporaryDirectory(prefix="KORYAO Sidecar Test with spaces ") as value:
         temporary_root = Path(value).resolve()
+        audit = OutputAudit()
+        audit.register(private_paths=(temporary_root,))
         system_temp = Path(tempfile.gettempdir()).resolve()
         try:
             temporary_root.relative_to(system_temp)
@@ -861,17 +1220,21 @@ def verify_sidecar(
             temporary_root,
             startup_timeout=startup_timeout,
             requested_port=requested_port,
+            audit=audit,
         )
         recovered_port = _verify_occupied_port_recovery(
             executable,
             temporary_root,
             startup_timeout=startup_timeout,
+            audit=audit,
         )
         parent_pid, parent_port = _verify_parent_exit(
             executable,
             temporary_root,
             startup_timeout=startup_timeout,
+            audit=audit,
         )
+        audit_evidence = audit.evidence()
 
     return {
         "ok": True,
@@ -895,7 +1258,12 @@ def verify_sidecar(
         "vector60_python_runtime": True,
         "vector60_python_runtime_versions": runtime["versions"],
         "vector60_svgo_runtime_included": False,
-        "vector_path_redacted": True,
+        "vector_path_redacted": not audit_evidence["controlled_path_exposed"],
+        "sensitive_output_redacted": audit_evidence["sensitive_output_redacted"],
+        "sensitive_audit_stage_count": audit_evidence["sensitive_audit_stage_count"],
+        "http_response_audit_count": audit_evidence["http_response_audit_count"],
+        "ready_audit_count": audit_evidence["ready_audit_count"],
+        "process_stream_audit_count": audit_evidence["process_stream_audit_count"],
         "graceful_shutdown": True,
         "port_released": True,
         "occupied_port_fail_closed": True,
@@ -905,7 +1273,8 @@ def verify_sidecar(
         "parent_exit_pid": parent_pid,
         "parent_exit_port": parent_port,
         "orphan_process": False,
-        "credential_exposed": False,
+        "credential_exposed": audit_evidence["credential_exposed"],
+        "controlled_path_exposed": audit_evidence["controlled_path_exposed"],
         "temporary_app_data_cleaned": True,
         "rust_supervisor_recovery_tested": False,
     }

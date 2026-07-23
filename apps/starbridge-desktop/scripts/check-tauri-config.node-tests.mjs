@@ -163,11 +163,15 @@ test("valid base and Windows merge agree with the installed Tauri CLI", () => {
   });
 });
 
-test("valid base and macOS resource glob agree with the installed Tauri CLI", () => {
+test("disabled macOS sidecar overlay agrees with the installed Tauri CLI", () => {
+  const merged = mergePatch(clone(BASE_CONFIG), MACOS_PATCH);
+  assert.equal(merged.bundle.active, false);
+  assert.equal(Object.hasOwn(merged.bundle, "externalBin"), false);
+  assert.equal(Object.hasOwn(merged.bundle, "resources"), false);
   assertCheckerAndTauri({
     base: clone(BASE_CONFIG),
     expectedStatus: 0,
-    label: "valid macOS configuration",
+    label: "disabled macOS sidecar configuration",
     patch: MACOS_PATCH,
     platform: "macos",
   });

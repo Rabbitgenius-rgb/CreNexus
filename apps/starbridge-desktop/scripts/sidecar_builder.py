@@ -59,6 +59,33 @@ EXPECTED_DARWIN_ARCHITECTURE = {
     "x86_64-apple-darwin": "x86_64",
 }
 DARWIN_NATIVE_SUFFIXES = (".so", ".dylib")
+SANITIZED_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
+TRUSTED_DARWIN_TOOLS = {
+    "file": Path("/usr/bin/file"),
+    "lipo": Path("/usr/bin/lipo"),
+    "otool": Path("/usr/bin/otool"),
+}
+TOOLCHAIN_ENVIRONMENT_VARIABLES = frozenset(
+    {
+        "CODESIGN_ALLOCATE",
+        "DEVELOPER_DIR",
+        "MAGIC",
+        "SDKROOT",
+        "TOOLCHAINS",
+        "XCRUN_CACHE_PATH",
+    }
+)
+RUNTIME_ENVIRONMENT_VARIABLES = frozenset(
+    {
+        "CODEX_HOME",
+        "STARBRIDGE_APP_DATA_DIR",
+        "STARBRIDGE_SESSION_TOKEN",
+    }
+)
+MACHO_CPU_TYPES = {
+    "arm64": 0x0100000C,
+    "x86_64": 0x01000007,
+}
 
 
 class SidecarBuildError(RuntimeError):
@@ -111,21 +138,6 @@ def _platform_target(system: str, machine: str) -> str:
 
 
 def detect_host_target() -> str:
-    rustc = shutil.which("rustc")
-    if rustc:
-        completed = subprocess.run(
-            [rustc, "-Vv"],
-            check=False,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-        )
-        if completed.returncode == 0:
-            for line in completed.stdout.splitlines():
-                if line.startswith("host:"):
-                    candidate = line.split(":", 1)[1].strip()
-                    if candidate in SUPPORTED_DARWIN_TARGETS:
-                        return candidate
     return _platform_target(platform.system(), platform.machine())
 
 
@@ -152,7 +164,11 @@ def sanitized_environment(
         if (
             normalized.startswith("PYTHON")
             or normalized.startswith("PYINSTALLER_")
+            or normalized.startswith("DYLD_")
+            or normalized.startswith("LD_")
             or normalized == "__PYVENV_LAUNCHER__"
+            or normalized in TOOLCHAIN_ENVIRONMENT_VARIABLES
+            or normalized in RUNTIME_ENVIRONMENT_VARIABLES
         ):
             continue
         if normalized.startswith("PIP_"):
@@ -160,6 +176,7 @@ def sanitized_environment(
                 sanitized[normalized] = value
             continue
         sanitized[key] = value
+    sanitized["PATH"] = SANITIZED_PATH
     if for_pip:
         # Match bootstrap.sh: disable every pip config file while preserving only
         # network/authentication settings needed by legitimate managed networks.
@@ -480,16 +497,21 @@ def _run(
     capture_output: bool = False,
     timeout: float | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    completed = subprocess.run(
-        [os.fspath(argument) for argument in arguments],
-        cwd=cwd,
-        env=None if environment is None else dict(environment),
-        check=False,
-        capture_output=capture_output,
-        text=True,
-        encoding="utf-8",
-        timeout=timeout,
-    )
+    try:
+        completed = subprocess.run(
+            [os.fspath(argument) for argument in arguments],
+            cwd=cwd,
+            env=None if environment is None else dict(environment),
+            check=False,
+            capture_output=capture_output,
+            text=True,
+            encoding="utf-8",
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        raise SidecarBuildError("Command timed out.") from None
+    except OSError:
+        raise SidecarBuildError("Command could not be started.") from None
     if completed.returncode != 0:
         detail = ""
         if capture_output:
@@ -846,12 +868,50 @@ def _replace_staged_pair(
 
 
 def _required_tool(name: str) -> str:
-    executable = shutil.which(name)
+    executable = TRUSTED_DARWIN_TOOLS.get(name)
     if executable is None:
+        raise SidecarBuildError(f"Unsupported Darwin artifact verification tool: {name}.")
+    for component in (Path("/"), Path("/usr"), Path("/usr/bin"), executable):
+        try:
+            metadata = os.lstat(component)
+        except FileNotFoundError as exc:
+            raise SidecarBuildError(
+                f"Required Darwin artifact verification tool is unavailable: {name}."
+            ) from exc
+        if stat.S_ISLNK(metadata.st_mode):
+            raise SidecarBuildError(f"Trusted Darwin verification path is a symlink: {component}.")
+        if metadata.st_uid != 0 or metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+            raise SidecarBuildError(
+                f"Trusted Darwin verification path has unsafe ownership or permissions: {component}."
+            )
+    metadata = os.lstat(executable)
+    if not stat.S_ISREG(metadata.st_mode) or not os.access(executable, os.X_OK):
         raise SidecarBuildError(
-            f"Required Darwin artifact verification tool is unavailable: {name}."
+            f"Required Darwin artifact verification tool is not executable: {name}."
         )
-    return executable
+    return os.fspath(executable)
+
+
+def _verify_thin_macho_header(
+    path: Path,
+    *,
+    label: str,
+    expected_architecture: str,
+) -> None:
+    try:
+        with path.open("rb") as handle:
+            header = handle.read(8)
+    except OSError as exc:
+        raise SidecarBuildError(f"Could not read the Mach-O header for {label}.") from exc
+    if len(header) != 8 or header[:4] != b"\xcf\xfa\xed\xfe":
+        raise SidecarBuildError(f"{label} is not a thin little-endian 64-bit Mach-O file.")
+    expected_cpu_type = MACHO_CPU_TYPES[expected_architecture]
+    actual_cpu_type = int.from_bytes(header[4:8], byteorder="little", signed=False)
+    if actual_cpu_type != expected_cpu_type:
+        raise SidecarBuildError(
+            f"{label} has Mach-O CPU type {actual_cpu_type:#x}; "
+            f"expected {expected_cpu_type:#x} ({expected_architecture})."
+        )
 
 
 def _support_file_paths(directory: Path) -> list[Path]:
@@ -955,8 +1015,13 @@ def _verify_macho_file(
     bundle_root: Path | None = None,
     executable_directory: Path | None = None,
 ) -> tuple[list[str], int, int]:
+    _verify_thin_macho_header(
+        path,
+        label=label,
+        expected_architecture=expected_architecture,
+    )
     file_result = _run(
-        [file_tool, "-L", "-b", path],
+        [file_tool, "-d", "-L", "-b", path],
         environment=environment,
         capture_output=True,
         timeout=30,
@@ -1057,6 +1122,7 @@ def verify_staged_artifact(layout: BuildLayout) -> dict[str, object]:
     lipo_tool = _required_tool("lipo")
     otool_tool = _required_tool("otool")
     tool_environment = sanitized_environment()
+    tool_environment["LC_ALL"] = "C"
     architectures, linked_library_count, executable_rpath_count = _verify_macho_file(
         layout.staged_executable,
         label="staged sidecar executable",
