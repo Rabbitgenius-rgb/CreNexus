@@ -1,3 +1,5 @@
+import os
+import re
 from pathlib import Path
 
 from PyInstaller.utils.hooks import copy_metadata
@@ -9,6 +11,16 @@ VECTOR60_DISTRIBUTIONS = ("vtracer", "skia-pathops", "svgpathtools")
 VECTOR60_METADATA = []
 for distribution in VECTOR60_DISTRIBUTIONS:
     VECTOR60_METADATA += copy_metadata(distribution)
+TARGET_TRIPLE = os.environ.get("STARBRIDGE_SIDECAR_TARGET_TRIPLE", "")
+if TARGET_TRIPLE:
+    if (
+        not re.fullmatch(r"[A-Za-z0-9_.-]+", TARGET_TRIPLE)
+        or TARGET_TRIPLE not in {"aarch64-apple-darwin", "x86_64-apple-darwin"}
+    ):
+        raise ValueError("Unsupported STARBRIDGE_SIDECAR_TARGET_TRIPLE.")
+    CONTENTS_DIRECTORY = f"_internal-{TARGET_TRIPLE}"
+else:
+    CONTENTS_DIRECTORY = "_internal"
 
 analysis = Analysis(
     [str(SCRIPT_DIR / "sidecar_entry.py")],
@@ -57,6 +69,7 @@ executable = EXE(
     upx=False,
     console=True,
     disable_windowed_traceback=False,
+    contents_directory=CONTENTS_DIRECTORY,
 )
 
 collection = COLLECT(

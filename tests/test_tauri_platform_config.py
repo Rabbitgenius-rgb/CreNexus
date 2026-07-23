@@ -14,6 +14,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 TAURI_DIR = REPO_ROOT / "apps" / "starbridge-desktop" / "src-tauri"
 BASE_CONFIG = TAURI_DIR / "tauri.conf.json"
 WINDOWS_CONFIG = TAURI_DIR / "tauri.windows.conf.json"
+MACOS_CONFIG = TAURI_DIR / "tauri.macos.conf.json"
 DESKTOP_PACKAGE = REPO_ROOT / "apps" / "starbridge-desktop" / "package.json"
 RELEASE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "starbridge-desktop-release.yml"
 
@@ -42,13 +43,16 @@ class TauriPlatformConfigTest(unittest.TestCase):
     def setUp(self) -> None:
         self.base = load_config(BASE_CONFIG)
         self.windows = merge_patch(self.base, load_config(WINDOWS_CONFIG))
+        self.macos = merge_patch(self.base, load_config(MACOS_CONFIG))
 
     def test_config_files_are_parseable_tauri_v2_json_objects(self) -> None:
         self.assertEqual("https://schema.tauri.app/config/2", self.base["$schema"])
         self.assertIsInstance(load_config(WINDOWS_CONFIG), dict)
+        self.assertIsInstance(load_config(MACOS_CONFIG), dict)
         self.assertIsInstance(self.base["build"], dict)
         self.assertIsInstance(self.base["bundle"], dict)
         self.assertIsInstance(self.windows["bundle"], dict)
+        self.assertIsInstance(self.macos["bundle"], dict)
 
     def test_posix_hooks_use_cross_platform_npm_entrypoint(self) -> None:
         build = self.base["build"]
@@ -107,7 +111,7 @@ class TauriPlatformConfigTest(unittest.TestCase):
             package["scripts"]["tauri:bundle:nsis"],
         )
         self.assertEqual(
-            "node --test scripts/check-tauri-config.node-tests.mjs && node scripts/check-tauri-config.mjs",
+            "node --test scripts/check-tauri-config.node-tests.mjs && node scripts/check-tauri-config.mjs --platform windows --platform macos",
             package["scripts"]["test:tauri-config"],
         )
         release_workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
@@ -118,13 +122,20 @@ class TauriPlatformConfigTest(unittest.TestCase):
         self.assertIn("Build-Sidecar.ps1", release_workflow)
         self.assertIn("New-StarBridgeUpdateManifest.ps1", release_workflow)
 
-    def test_non_windows_base_does_not_require_a_windows_or_darwin_sidecar(self) -> None:
+    def test_macos_merge_uses_dynamic_tauri_external_binary_contract(self) -> None:
+        bundle = self.macos["bundle"]
+        self.assertTrue(bundle["active"])
+        self.assertEqual(["binaries/starbridge-sidecar"], bundle["externalBin"])
+        self.assertEqual(["binaries/_internal-*/**/*"], bundle["resources"])
+        config_text = MACOS_CONFIG.read_text(encoding="utf-8").lower()
+        self.assertNotIn("aarch64-apple-darwin", config_text)
+        self.assertNotIn("x86_64-apple-darwin", config_text)
+
+    def test_platform_neutral_base_does_not_require_any_sidecar(self) -> None:
         bundle = self.base["bundle"]
         self.assertFalse(bundle["active"])
         self.assertNotIn("externalBin", bundle)
-        config_text = "\n".join(
-            path.read_text(encoding="utf-8") for path in (BASE_CONFIG, WINDOWS_CONFIG)
-        ).lower()
+        config_text = BASE_CONFIG.read_text(encoding="utf-8").lower()
         self.assertNotIn("apple-darwin", config_text)
         self.assertNotIn("aarch64", config_text)
         self.assertNotIn("x86_64", config_text)

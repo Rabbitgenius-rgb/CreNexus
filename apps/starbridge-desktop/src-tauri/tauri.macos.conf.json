@@ -1,0 +1,7 @@
+{
+  "bundle": {
+    "active": true,
+    "externalBin": ["binaries/starbridge-sidecar"],
+    "resources": ["binaries/_internal-*/**/*"]
+  }
+}
