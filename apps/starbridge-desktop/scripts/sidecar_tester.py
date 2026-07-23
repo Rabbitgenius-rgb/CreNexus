@@ -46,6 +46,8 @@ PNG_1X1 = base64.b64decode(
 )
 CSS_URL_PATTERN = re.compile(r"url\(\s*([^)]+?)\s*\)", re.IGNORECASE)
 PERCENT_ESCAPE_PATTERN = re.compile(r"%[0-9A-Fa-f]{2}")
+JSON_ESCAPED_SLASH_PATTERN = re.compile(r"\\+/")
+MAX_PATH_PERCENT_DECODE_ROUNDS = 4
 
 
 class SidecarTestError(RuntimeError):
@@ -67,6 +69,29 @@ def _audit_text_fragments(value: object) -> list[str]:
             fragments.extend(_audit_text_fragments(item))
         return fragments
     return [json.dumps(value, ensure_ascii=False, sort_keys=True)]
+
+
+def _path_text_views(value: str) -> tuple[str, ...]:
+    """Return bounded canonical views used only for private-path detection."""
+    views: list[str] = []
+    seen: set[str] = set()
+    current = value
+    for decode_round in range(MAX_PATH_PERCENT_DECODE_ROUNDS + 1):
+        normalized = JSON_ESCAPED_SLASH_PATTERN.sub("/", current)
+        if normalized in seen:
+            break
+        views.append(normalized)
+        seen.add(normalized)
+        if (
+            decode_round == MAX_PATH_PERCENT_DECODE_ROUNDS
+            or PERCENT_ESCAPE_PATTERN.search(normalized) is None
+        ):
+            break
+        decoded = urllib.parse.unquote(normalized, errors="replace")
+        if decoded == normalized:
+            break
+        current = decoded
+    return tuple(views)
 
 
 @dataclass
@@ -479,46 +504,18 @@ def _assert_paths_redacted(
     serialized = (
         value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, sort_keys=True)
     )
-    normalized_percent_serialized = PERCENT_ESCAPE_PATTERN.sub(
-        lambda match: match.group(0).upper(),
-        serialized,
-    )
+    observed_views = _path_text_views(serialized)
     for private_path in private_paths:
         absolute = Path(os.path.abspath(os.fspath(private_path)))
         resolved = private_path.resolve()
-        literal_representations: set[str] = set()
-        percent_representations: set[str] = set()
+        protected_representations: set[str] = set()
         for candidate in (absolute, resolved):
             raw = os.fspath(candidate)
-            uri = candidate.as_uri()
-            literal_representations.update(
-                {
-                    raw,
-                    raw.replace("/", r"\/"),
-                }
-            )
-            for encoded in (
-                uri,
-                urllib.parse.quote(raw, safe="/:"),
-                urllib.parse.quote(raw, safe=""),
-            ):
-                percent_representations.update(
-                    {
-                        encoded,
-                        encoded.replace("/", r"\/"),
-                    }
-                )
+            protected_representations.update({raw, candidate.as_uri()})
         if any(
-            representation and representation in serialized
-            for representation in literal_representations
-        ) or any(
-            representation
-            and PERCENT_ESCAPE_PATTERN.sub(
-                lambda match: match.group(0).upper(),
-                representation,
-            )
-            in normalized_percent_serialized
-            for representation in percent_representations
+            representation and representation in observed
+            for observed in observed_views
+            for representation in protected_representations
         ):
             raise SidecarTestError(f"The {stage} exposed a private absolute path.")
 

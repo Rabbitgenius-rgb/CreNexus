@@ -65,27 +65,62 @@ TRUSTED_DARWIN_TOOLS = {
     "lipo": Path("/usr/bin/lipo"),
     "otool": Path("/usr/bin/otool"),
 }
-TOOLCHAIN_ENVIRONMENT_VARIABLES = frozenset(
+ENVIRONMENT_PASSTHROUGH_ALLOWLIST = frozenset(
     {
-        "CODESIGN_ALLOCATE",
-        "DEVELOPER_DIR",
-        "MAGIC",
-        "SDKROOT",
-        "TOOLCHAINS",
-        "XCRUN_CACHE_PATH",
-    }
-)
-RUNTIME_ENVIRONMENT_VARIABLES = frozenset(
-    {
-        "CODEX_HOME",
-        "STARBRIDGE_APP_DATA_DIR",
-        "STARBRIDGE_SESSION_TOKEN",
+        "ALL_PROXY",
+        "CURL_CA_BUNDLE",
+        "FTP_PROXY",
+        "HOME",
+        "HTTPS_PROXY",
+        "HTTP_PROXY",
+        "LANG",
+        "LANGUAGE",
+        "LC_ADDRESS",
+        "LC_ALL",
+        "LC_COLLATE",
+        "LC_CTYPE",
+        "LC_IDENTIFICATION",
+        "LC_MEASUREMENT",
+        "LC_MESSAGES",
+        "LC_MONETARY",
+        "LC_NAME",
+        "LC_NUMERIC",
+        "LC_PAPER",
+        "LC_TELEPHONE",
+        "LC_TIME",
+        "LOGNAME",
+        "NO_PROXY",
+        "REQUESTS_CA_BUNDLE",
+        "SSL_CERT_DIR",
+        "SSL_CERT_FILE",
+        "TEMP",
+        "TMP",
+        "TMPDIR",
+        "TZ",
+        "USER",
+        "all_proxy",
+        "ftp_proxy",
+        "http_proxy",
+        "https_proxy",
+        "no_proxy",
     }
 )
 MACHO_CPU_TYPES = {
     "arm64": 0x0100000C,
     "x86_64": 0x01000007,
 }
+MACHO_MAGICS = frozenset(
+    {
+        b"\xfe\xed\xfa\xce",
+        b"\xce\xfa\xed\xfe",
+        b"\xfe\xed\xfa\xcf",
+        b"\xcf\xfa\xed\xfe",
+        b"\xca\xfe\xba\xbe",
+        b"\xbe\xba\xfe\xca",
+        b"\xca\xfe\xba\xbf",
+        b"\xbf\xba\xfe\xca",
+    }
+)
 
 
 class SidecarBuildError(RuntimeError):
@@ -161,21 +196,10 @@ def sanitized_environment(
     sanitized: dict[str, str] = {}
     for key, value in source.items():
         normalized = key.upper()
-        if (
-            normalized.startswith("PYTHON")
-            or normalized.startswith("PYINSTALLER_")
-            or normalized.startswith("DYLD_")
-            or normalized.startswith("LD_")
-            or normalized == "__PYVENV_LAUNCHER__"
-            or normalized in TOOLCHAIN_ENVIRONMENT_VARIABLES
-            or normalized in RUNTIME_ENVIRONMENT_VARIABLES
-        ):
-            continue
-        if normalized.startswith("PIP_"):
-            if for_pip and key == normalized and normalized in PIP_NETWORK_ENVIRONMENT_ALLOWLIST:
-                sanitized[normalized] = value
-            continue
-        sanitized[key] = value
+        if key in ENVIRONMENT_PASSTHROUGH_ALLOWLIST:
+            sanitized[key] = value
+        elif for_pip and key == normalized and normalized in PIP_NETWORK_ENVIRONMENT_ALLOWLIST:
+            sanitized[normalized] = value
     sanitized["PATH"] = SANITIZED_PATH
     if for_pip:
         # Match bootstrap.sh: disable every pip config file while preserving only
@@ -388,6 +412,10 @@ def _validate_layout_roots(layout: BuildLayout) -> None:
         (
             layout.desktop_root / "scripts" / "sidecar_tester.py",
             "Darwin sidecar tester",
+        ),
+        (
+            layout.desktop_root / "scripts" / "sidecar_environment.sh",
+            "Darwin sidecar environment wrapper",
         ),
         (
             layout.desktop_root / "scripts" / "starbridge-sidecar.spec",
@@ -922,12 +950,36 @@ def _support_file_paths(directory: Path) -> list[Path]:
     return sorted(paths)
 
 
-def _native_support_paths(directory: Path) -> list[Path]:
+def _support_payload_groups(directory: Path) -> list[tuple[Path, tuple[Path, ...]]]:
+    physical_root = directory.resolve(strict=True)
+    grouped: dict[Path, list[Path]] = {}
+    for logical_path in _support_file_paths(directory):
+        try:
+            payload_path = logical_path.resolve(strict=True)
+            payload_path.relative_to(physical_root)
+            metadata = os.stat(payload_path)
+        except (FileNotFoundError, OSError, ValueError) as exc:
+            raise SidecarBuildError(
+                "The staged support inventory contains an unsafe payload."
+            ) from exc
+        if not stat.S_ISREG(metadata.st_mode):
+            raise SidecarBuildError("The staged support inventory contains a non-regular payload.")
+        grouped.setdefault(payload_path, []).append(logical_path)
     return [
-        path
-        for path in _support_file_paths(directory)
-        if path.name.casefold().endswith(DARWIN_NATIVE_SUFFIXES)
+        (payload_path, tuple(sorted(logical_paths)))
+        for payload_path, logical_paths in sorted(
+            grouped.items(),
+            key=lambda item: os.fspath(item[0]),
+        )
     ]
+
+
+def _read_payload_header(path: Path, *, label: str) -> bytes:
+    try:
+        with path.open("rb") as handle:
+            return handle.read(8)
+    except OSError as exc:
+        raise SidecarBuildError(f"Could not read the payload header for {label}.") from exc
 
 
 def _validate_macho_reference(
@@ -1014,18 +1066,23 @@ def _verify_macho_file(
     require_linked_library: bool,
     bundle_root: Path | None = None,
     executable_directory: Path | None = None,
+    file_description: str | None = None,
 ) -> tuple[list[str], int, int]:
     _verify_thin_macho_header(
         path,
         label=label,
         expected_architecture=expected_architecture,
     )
-    file_result = _run(
-        [file_tool, "-d", "-L", "-b", path],
-        environment=environment,
-        capture_output=True,
-        timeout=30,
-    ).stdout.strip()
+    file_result = (
+        file_description.strip()
+        if file_description is not None
+        else _run(
+            [file_tool, "-d", "-L", "-b", path],
+            environment=environment,
+            capture_output=True,
+            timeout=30,
+        ).stdout.strip()
+    )
     lowered_file_result = file_result.casefold()
     if (
         "mach-o" not in lowered_file_result
@@ -1136,51 +1193,87 @@ def verify_staged_artifact(layout: BuildLayout) -> dict[str, object]:
         executable_directory=layout.staged_executable.parent,
     )
 
-    native_paths = _native_support_paths(layout.staged_support_directory)
-    if len(native_paths) != support["native_extension_count"]:
+    payload_groups = _support_payload_groups(layout.staged_support_directory)
+    logical_support_count = sum(len(logical_paths) for _, logical_paths in payload_groups)
+    if logical_support_count != support["support_file_count"]:
+        raise SidecarBuildError("The staged support entry inventory changed during verification.")
+    if len(payload_groups) + support["support_symlink_count"] != logical_support_count:
+        raise SidecarBuildError("The staged support payload and symlink counts are inconsistent.")
+    native_suffix_count = sum(
+        logical_path.name.casefold().endswith(DARWIN_NATIVE_SUFFIXES)
+        for _, logical_paths in payload_groups
+        for logical_path in logical_paths
+    )
+    if native_suffix_count != support["native_extension_count"]:
         raise SidecarBuildError(
             "The staged native extension inventory changed during verification."
         )
+
+    native_macho_logical_entry_count = 0
+    native_macho_payload_count = 0
     native_linked_library_count = 0
     native_rpath_count = 0
-    for native_path in native_paths:
-        relative_label = native_path.relative_to(layout.staged_support_directory).as_posix()
-        _, dependency_count, rpath_count = _verify_macho_file(
-            native_path,
-            label=f"staged native extension {relative_label}",
-            expected_architecture=expected_architecture,
-            file_tool=file_tool,
-            lipo_tool=lipo_tool,
-            otool_tool=otool_tool,
-            environment=tool_environment,
-            require_linked_library=False,
-            bundle_root=layout.staged_support_directory,
-            executable_directory=layout.staged_executable.parent,
-        )
-        native_linked_library_count += dependency_count
-        native_rpath_count += rpath_count
-
-    native_path_set = set(native_paths)
-    non_native_file_count = 0
-    for support_path in _support_file_paths(layout.staged_support_directory):
-        if support_path in native_path_set:
-            continue
-        with support_path.open("rb") as handle:
-            if handle.read(2) == b"MZ":
-                raise SidecarBuildError(
-                    "The staged sidecar support tree contains a renamed PE payload."
-                )
-        file_result = _run(
-            [file_tool, "-L", "-b", support_path],
+    non_native_logical_entry_count = 0
+    non_native_payload_count = 0
+    for payload_path, logical_paths in payload_groups:
+        relative_label = logical_paths[0].relative_to(layout.staged_support_directory).as_posix()
+        label = f"staged support payload {relative_label}"
+        header = _read_payload_header(payload_path, label=label)
+        file_description = _run(
+            [file_tool, "-d", "-L", "-b", payload_path],
             environment=tool_environment,
             capture_output=True,
             timeout=30,
-        ).stdout.casefold()
-        if any(marker in file_result for marker in ("pe32", "ms-dos", "windows executable")):
-            raise SidecarBuildError(
-                "The staged sidecar support tree contains a renamed PE payload."
+        ).stdout.strip()
+        lowered_file_description = file_description.casefold()
+        raw_macho = header[:4] in MACHO_MAGICS
+        file_reports_macho = "mach-o" in lowered_file_description
+        has_native_suffix = any(
+            logical_path.name.casefold().endswith(DARWIN_NATIVE_SUFFIXES)
+            for logical_path in logical_paths
+        )
+        if raw_macho or file_reports_macho:
+            _, dependency_count, rpath_count = _verify_macho_file(
+                payload_path,
+                label=label,
+                expected_architecture=expected_architecture,
+                file_tool=file_tool,
+                lipo_tool=lipo_tool,
+                otool_tool=otool_tool,
+                environment=tool_environment,
+                require_linked_library=False,
+                bundle_root=layout.staged_support_directory,
+                executable_directory=layout.staged_executable.parent,
+                file_description=file_description,
             )
-        non_native_file_count += 1
+            native_macho_logical_entry_count += len(logical_paths)
+            native_macho_payload_count += 1
+            native_linked_library_count += dependency_count
+            native_rpath_count += rpath_count
+        else:
+            if has_native_suffix:
+                raise SidecarBuildError(
+                    "A staged Darwin native-extension entry is not a Mach-O payload."
+                )
+            if header[:2] == b"MZ":
+                raise SidecarBuildError(
+                    "The staged sidecar support tree contains a renamed PE payload."
+                )
+            if any(
+                marker in lowered_file_description
+                for marker in ("pe32", "ms-dos", "windows executable")
+            ):
+                raise SidecarBuildError(
+                    "The staged sidecar support tree contains a renamed PE payload."
+                )
+            non_native_logical_entry_count += len(logical_paths)
+            non_native_payload_count += 1
+
+    if (
+        native_macho_logical_entry_count + non_native_logical_entry_count != logical_support_count
+        or native_macho_payload_count + non_native_payload_count != len(payload_groups)
+    ):
+        raise SidecarBuildError("The staged support verification counts are inconsistent.")
 
     check_vector60_runtime(layout.staged_executable)
     with tempfile.TemporaryDirectory(prefix="KORYAO Sidecar Relocation with spaces ") as temporary:
@@ -1205,11 +1298,14 @@ def verify_staged_artifact(layout: BuildLayout) -> dict[str, object]:
         "lipo_architectures": architectures,
         "otool_linked_library_count": linked_library_count,
         "otool_rpath_count": executable_rpath_count,
-        "native_mach_o_verified_count": len(native_paths),
+        "support_unique_payload_count": len(payload_groups),
+        "native_macho_logical_entry_count": native_macho_logical_entry_count,
+        "native_mach_o_verified_count": native_macho_payload_count,
         "native_architectures": [expected_architecture],
         "native_otool_dependency_count": native_linked_library_count,
         "native_otool_rpath_count": native_rpath_count,
-        "non_native_file_magic_verified_count": non_native_file_count,
+        "non_native_logical_entry_count": non_native_logical_entry_count,
+        "non_native_file_magic_verified_count": non_native_payload_count,
         "forbidden_absolute_dependency_count": 0,
         "windows_payload_count": 0,
         **support,

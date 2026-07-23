@@ -43,6 +43,7 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
             "sidecar_entry.py",
             "sidecar_builder.py",
             "sidecar_tester.py",
+            "sidecar_environment.sh",
             "starbridge-sidecar.spec",
         ):
             (scripts / name).write_text("# fixture\n", encoding="utf-8")
@@ -202,88 +203,246 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
 
     @unittest.skipIf(os.name == "nt", "POSIX shell checks do not run on Windows")
     def test_posix_wrappers_are_executable_and_parse_as_sh(self) -> None:
+        environment_helper = SCRIPTS_DIR / "sidecar_environment.sh"
+        subprocess.run(["sh", "-n", environment_helper], check=True)
+        helper_text = environment_helper.read_text(encoding="utf-8")
+        self.assertIn('exec /usr/bin/env -i "PATH=/usr/bin:/bin:/usr/sbin:/sbin"', helper_text)
+        for name in (
+            *sidecar_builder.ENVIRONMENT_PASSTHROUGH_ALLOWLIST,
+            *sidecar_builder.PIP_NETWORK_ENVIRONMENT_ALLOWLIST,
+            "CARGO_BUILD_TARGET",
+        ):
+            self.assertIn(f'"${{{name}+x}}"', helper_text)
         for name in ("Build-Sidecar.sh", "Test-Sidecar.sh"):
             path = SCRIPTS_DIR / name
             with self.subTest(path=path):
                 self.assertTrue(path.stat().st_mode & stat.S_IXUSR)
                 subprocess.run(["sh", "-n", path], check=True)
                 text = path.read_text(encoding="utf-8")
-                self.assertIn('exec "$RUNNER" -I', text)
-                self.assertIn("PYTHON[A-Za-z0-9_]*", text)
-                self.assertIn("unset __PYVENV_LAUNCHER__", text)
+                self.assertIn('. "$SCRIPT_DIR/sidecar_environment.sh"', text)
+                self.assertIn("sidecar_exec_clean", text)
+                self.assertIn("__PYVENV_LAUNCHER__", text)
 
     def test_python_and_pip_environments_remove_injection_and_install_redirects(
         self,
     ) -> None:
-        inherited = {
-            "PATH": "/trusted/bin",
-            "DYLD_INSERT_LIBRARIES": "/outside/injected.dylib",
-            "DYLD_LIBRARY_PATH": "/outside/dyld",
-            "LD_PRELOAD": "/outside/preload.so",
-            "LD_LIBRARY_PATH": "/outside/ld",
-            "MAGIC": "/outside/magic",
-            "DEVELOPER_DIR": "/outside/developer",
-            "SDKROOT": "/outside/sdk",
-            "TOOLCHAINS": "outside-toolchain",
-            "XCRUN_CACHE_PATH": "/outside/xcrun-cache",
-            "CODESIGN_ALLOCATE": "/outside/codesign_allocate",
-            "STARBRIDGE_SESSION_TOKEN": "inherited-secret",
-            "STARBRIDGE_APP_DATA_DIR": "/outside/app-data",
-            "CODEX_HOME": "/outside/codex-home",
-            "PYTHONPATH": "/attacker",
-            "PYTHONHOME": "/outside",
-            "PYTHONUSERBASE": "/outside-user",
-            "__PYVENV_LAUNCHER__": "/outside-launcher",
-            "PYINSTALLER_CONFIG_DIR": "/outside-pyinstaller-cache",
-            "PIP_TARGET": "/outside-target",
-            "PIP_PREFIX": "/outside-prefix",
-            "PIP_ROOT": "/outside-root",
-            "PIP_USER": "1",
-            "PIP_CONFIG_FILE": "/outside/pip.conf",
+        safe_environment = {
+            "HOME": "/controlled/home",
+            "TMPDIR": "/controlled/tmp",
+            "LANG": "en_US.UTF-8",
+            "LC_CTYPE": "en_US.UTF-8",
+            "HTTPS_PROXY": "http://proxy.invalid:8443",
+            "http_proxy": "http://proxy.invalid:8081",
+            "SSL_CERT_FILE": "/certs/python.pem",
+            "REQUESTS_CA_BUNDLE": "/certs/requests.pem",
+        }
+        pip_environment_allowlist = {
+            "PIP_INDEX_URL": "https://packages.invalid/simple",
             "PIP_PROXY": "http://proxy.invalid:8080",
             "PIP_CERT": "/certs/pip.pem",
-            "HTTPS_PROXY": "http://proxy.invalid:8443",
-            "SSL_CERT_FILE": "/certs/python.pem",
+        }
+        dangerous_names = (
+            "PATH",
+            "DYLD_INSERT_LIBRARIES",
+            "DyLd_LIBRARY_PATH",
+            "LD_PRELOAD",
+            "Ld_LIBRARY_PATH",
+            "MAGIC",
+            "dEvElOpEr_DiR",
+            "SDKROOT",
+            "TOOLCHAINS",
+            "XCRUN_CACHE_PATH",
+            "CODESIGN_ALLOCATE",
+            "STARBRIDGE_SESSION_TOKEN",
+            "STARBRIDGE_APP_DATA_DIR",
+            "CODEX_HOME",
+            "pYtHoNpAtH",
+            "PYTHONHOME",
+            "_PYTHON_SYSCONFIGDATA_NAME",
+            "__PYVENV_LAUNCHER__",
+            "PYINSTALLER_CONFIG_DIR",
+            "PIP_TARGET",
+            "PIP_BUILD_TRACKER",
+            "PIP_CONFIG_FILE",
+            "cC",
+            "CXX",
+            "CPP",
+            "LD",
+            "LDSHARED",
+            "LDCXXSHARED",
+            "AR",
+            "ARFLAGS",
+            "RANLIB",
+            "NM",
+            "STRIP",
+            "AS",
+            "CFLAGS",
+            "CXXFLAGS",
+            "CPPFLAGS",
+            "LDFLAGS",
+            "OBJCFLAGS",
+            "FCFLAGS",
+            "FFLAGS",
+            "ARCHFLAGS",
+            "MACOSX_DEPLOYMENT_TARGET",
+            "CPATH",
+            "C_INCLUDE_PATH",
+            "CPLUS_INCLUDE_PATH",
+            "LIBRARY_PATH",
+            "COMPILER_PATH",
+            "GCC_EXEC_PREFIX",
+            "vIrTuAl_EnV",
+            "CONDA_PREFIX",
+            "_CE_CONDA",
+            "PKG_CONFIG_PATH",
+            "SETUPTOOLS_SCM_PRETEND_VERSION",
+            "DISTUTILS_USE_SDK",
+            "CMAKE_GENERATOR",
+            "MESON_ARGS",
+            "SKBUILD_CMAKE_ARGS",
+            "NINJA_STATUS",
+            "MAKEFLAGS",
+            "RUSTC",
+            "RUSTFLAGS",
+            "CARGO_HOME",
+            "CARGO_BUILD_TARGET",
+            "PYO3_CONFIG_FILE",
+            "MATURIN_PEP517_ARGS",
+            "CCACHE_PREFIX",
+            "SCCACHE_ERROR_LOG",
+            "BASH_ENV",
+            "ENV",
+        )
+        inherited = {
+            **safe_environment,
+            **pip_environment_allowlist,
+            **{name: f"/tmp/evil-{index}" for index, name in enumerate(dangerous_names)},
         }
 
         python_environment = sidecar_builder.sanitized_environment(inherited)
         self.assertEqual(sidecar_builder.SANITIZED_PATH, python_environment["PATH"])
-        self.assertEqual("http://proxy.invalid:8443", python_environment["HTTPS_PROXY"])
-        self.assertEqual("/certs/python.pem", python_environment["SSL_CERT_FILE"])
-        self.assertFalse(
-            any(
-                name.upper().startswith(("PYTHON", "PIP_", "DYLD_", "LD_"))
-                or name.upper() == "__PYVENV_LAUNCHER__"
-                or name.upper() in sidecar_builder.TOOLCHAIN_ENVIRONMENT_VARIABLES
-                or name.upper() in sidecar_builder.RUNTIME_ENVIRONMENT_VARIABLES
-                for name in python_environment
-            )
-        )
-        self.assertNotIn("PYINSTALLER_CONFIG_DIR", python_environment)
+        for name, value in safe_environment.items():
+            self.assertEqual(value, python_environment[name])
+        for name in (*dangerous_names[1:], *pip_environment_allowlist):
+            self.assertNotIn(name, python_environment)
 
         pip_environment = sidecar_builder.sanitized_environment(
             inherited,
             for_pip=True,
         )
-        for dangerous in (
-            "PYTHONPATH",
-            "PYTHONHOME",
-            "PYTHONUSERBASE",
-            "__PYVENV_LAUNCHER__",
-            "PYINSTALLER_CONFIG_DIR",
-            "PIP_TARGET",
-            "PIP_PREFIX",
-            "PIP_ROOT",
-            "PIP_USER",
-        ):
-            self.assertNotIn(dangerous, pip_environment)
+        for name in dangerous_names[1:]:
+            if name == "PIP_CONFIG_FILE":
+                continue
+            self.assertNotIn(name, pip_environment)
+        for name, value in safe_environment.items():
+            self.assertEqual(value, pip_environment[name])
+        for name, value in pip_environment_allowlist.items():
+            self.assertEqual(value, pip_environment[name])
         self.assertEqual(os.devnull, pip_environment["PIP_CONFIG_FILE"])
         self.assertEqual("1", pip_environment["PIP_NO_INPUT"])
         self.assertEqual("1", pip_environment["PIP_DISABLE_PIP_VERSION_CHECK"])
-        self.assertEqual("http://proxy.invalid:8080", pip_environment["PIP_PROXY"])
-        self.assertEqual("/certs/pip.pem", pip_environment["PIP_CERT"])
-        self.assertEqual("http://proxy.invalid:8443", pip_environment["HTTPS_PROXY"])
-        self.assertEqual("/certs/python.pem", pip_environment["SSL_CERT_FILE"])
+
+    @unittest.skipUnless(sys.platform == "darwin", "Darwin compiler isolation test")
+    def test_source_build_does_not_execute_inherited_fake_compiler(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="KORYAOFakeCompiler") as temporary:
+            root = Path(temporary)
+            trace = root / "fake-compiler.trace"
+            fake_compiler = root / "fake-compiler"
+            fake_compiler.write_text(
+                f'#!/bin/sh\nprintf executed > "{trace}"\nexit 73\n',
+                encoding="utf-8",
+            )
+            fake_compiler.chmod(0o755)
+            source = root / "probe.c"
+            object_file = root / "probe.o"
+            source.write_text(
+                "int sidecar_compiler_probe(void) { return 0; }\n",
+                encoding="utf-8",
+            )
+            inherited = {
+                **os.environ,
+                "CC": os.fspath(fake_compiler),
+                "CXX": os.fspath(fake_compiler),
+                "LDSHARED": os.fspath(fake_compiler),
+                "CFLAGS": "-DPROBE_INJECTED=1",
+                "VIRTUAL_ENV": "/tmp/evil-virtual-environment",
+                "CONDA_PREFIX": "/tmp/evil-conda",
+            }
+            environment = sidecar_builder.sanitized_environment(inherited, for_pip=True)
+            compiler = environment.get("CC", "/usr/bin/cc")
+
+            completed = subprocess.run(
+                [compiler, "-c", source, "-o", object_file],
+                env=environment,
+                check=False,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            )
+
+            self.assertEqual(0, completed.returncode, completed.stderr)
+            self.assertFalse(trace.exists())
+            self.assertTrue(object_file.is_file())
+
+    def test_prepare_environment_uses_layout_venv_and_sanitized_children(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="KORYAO sidecar environment plan ") as temporary:
+            layout = self.make_layout_fixture(Path(temporary) / "repo")
+            build_python = layout.build_environment / "bin" / "python"
+            build_python.parent.mkdir(parents=True)
+            build_python.write_text("# fixture\n", encoding="utf-8")
+            inherited = {
+                "HOME": "/controlled/home",
+                "PIP_INDEX_URL": "https://packages.invalid/simple",
+                "CC": "/tmp/evil-cc",
+                "CFLAGS": "-DEVIL=1",
+                "VIRTUAL_ENV": "/tmp/evil-venv",
+                "CONDA_PREFIX": "/tmp/evil-conda",
+                "CARGO_HOME": "/tmp/evil-cargo",
+                "PIP_BUILD_TRACKER": "/tmp/evil-pip-build",
+            }
+            calls: list[tuple[list[object], dict[str, str]]] = []
+
+            def fake_run(
+                arguments: object,
+                *,
+                environment: dict[str, str] | None = None,
+                **_: object,
+            ) -> subprocess.CompletedProcess[str]:
+                command = list(arguments)  # type: ignore[arg-type]
+                calls.append((command, dict(environment or {})))
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            with (
+                mock.patch.dict(os.environ, inherited, clear=True),
+                mock.patch.object(sidecar_builder, "_run", side_effect=fake_run),
+            ):
+                actual_python = sidecar_builder._prepare_environment(
+                    layout,
+                    skip_dependency_install=False,
+                )
+
+            self.assertEqual(build_python, actual_python)
+            self.assertEqual(4, len(calls))
+            for command, environment in calls:
+                self.assertEqual(build_python, command[0])
+                for dangerous in (
+                    "CC",
+                    "CFLAGS",
+                    "VIRTUAL_ENV",
+                    "CONDA_PREFIX",
+                    "CARGO_HOME",
+                    "PIP_BUILD_TRACKER",
+                ):
+                    self.assertNotIn(dangerous, environment)
+                self.assertEqual("/controlled/home", environment["HOME"])
+                self.assertEqual(sidecar_builder.SANITIZED_PATH, environment["PATH"])
+            for _, environment in calls[:2]:
+                self.assertEqual(
+                    "https://packages.invalid/simple",
+                    environment["PIP_INDEX_URL"],
+                )
+            for _, environment in calls[2:]:
+                self.assertNotIn("PIP_INDEX_URL", environment)
 
     @unittest.skipIf(os.name == "nt", "POSIX wrapper checks do not run on Windows")
     def test_wrapper_python_isolation_blocks_startup_injection(self) -> None:
@@ -367,6 +526,117 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
 
             self.assertEqual(0, completed.returncode, completed.stderr)
             self.assertFalse(trace.exists())
+
+    @unittest.skipIf(os.name == "nt", "POSIX wrapper environment checks")
+    def test_wrappers_pass_only_the_explicit_environment_allowlist(self) -> None:
+        dangerous_names = (
+            "CC",
+            "cXx",
+            "AR",
+            "CFLAGS",
+            "CPPFLAGS",
+            "LDFLAGS",
+            "ARCHFLAGS",
+            "MACOSX_DEPLOYMENT_TARGET",
+            "PKG_CONFIG_PATH",
+            "vIrTuAl_EnV",
+            "CONDA_PREFIX",
+            "CMAKE_GENERATOR",
+            "MESON_ARGS",
+            "NINJA_STATUS",
+            "MAKEFLAGS",
+            "RUSTC",
+            "CARGO_HOME",
+            "PYO3_CONFIG_FILE",
+            "MATURIN_PEP517_ARGS",
+            "PIP_BUILD_TRACKER",
+            "PYTHONPATH",
+            "DyLd_LIBRARY_PATH",
+            "Ld_PRELOAD",
+            "BASH_ENV",
+            "ENV",
+        )
+        with tempfile.TemporaryDirectory(prefix="KORYAO wrapper environment ") as temporary:
+            root = Path(temporary) / "repo"
+            scripts = root / "apps" / "starbridge-desktop" / "scripts"
+            runner = root / ".venv" / "bin" / "python"
+            scripts.mkdir(parents=True)
+            runner.parent.mkdir(parents=True)
+            (scripts / "sidecar_environment.sh").write_text(
+                (SCRIPTS_DIR / "sidecar_environment.sh").read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+            compiler_trace = Path(temporary) / "fake-compiler.trace"
+            fake_compiler = Path(temporary) / "fake-compiler"
+            fake_compiler.write_text(
+                f'#!/bin/sh\nprintf executed > "{compiler_trace}"\nexit 91\n',
+                encoding="utf-8",
+            )
+            fake_compiler.chmod(0o755)
+
+            for wrapper_name in ("Build-Sidecar.sh", "Test-Sidecar.sh"):
+                with self.subTest(wrapper=wrapper_name):
+                    wrapper = scripts / wrapper_name
+                    wrapper.write_text(
+                        (SCRIPTS_DIR / wrapper_name).read_text(encoding="utf-8"),
+                        encoding="utf-8",
+                    )
+                    capture = Path(temporary) / f"{wrapper_name}.environment"
+                    runner.write_text(
+                        f'#!/bin/sh\n/usr/bin/env > "{capture}"\n',
+                        encoding="utf-8",
+                    )
+                    runner.chmod(0o755)
+                    environment = {
+                        **os.environ,
+                        **{name: os.fspath(fake_compiler) for name in dangerous_names},
+                        "HOME": "/controlled/home",
+                        "TMPDIR": "/controlled/tmp",
+                        "LANG": "C",
+                        "LC_CTYPE": "C",
+                        "HTTPS_PROXY": "http://proxy.invalid:8443",
+                        "SSL_CERT_FILE": "/certs/python.pem",
+                        "PIP_INDEX_URL": "https://packages.invalid/simple",
+                        "PIP_CERT": "/certs/pip.pem",
+                        "CARGO_BUILD_TARGET": "aarch64-apple-darwin",
+                    }
+                    completed = subprocess.run(
+                        ["/bin/sh", wrapper, "--print-plan"],
+                        env=environment,
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                    )
+
+                    self.assertEqual(0, completed.returncode, completed.stderr)
+                    captured = dict(
+                        line.split("=", 1)
+                        for line in capture.read_text(encoding="utf-8").splitlines()
+                        if "=" in line
+                    )
+                    for name in dangerous_names:
+                        self.assertNotIn(name, captured)
+                    self.assertEqual(sidecar_builder.SANITIZED_PATH, captured["PATH"])
+                    self.assertEqual("/controlled/home", captured["HOME"])
+                    self.assertEqual("/controlled/tmp", captured["TMPDIR"])
+                    self.assertEqual("C", captured["LANG"])
+                    self.assertEqual("C", captured["LC_CTYPE"])
+                    self.assertEqual(
+                        "http://proxy.invalid:8443",
+                        captured["HTTPS_PROXY"],
+                    )
+                    self.assertEqual("/certs/python.pem", captured["SSL_CERT_FILE"])
+                    self.assertEqual(
+                        "https://packages.invalid/simple",
+                        captured["PIP_INDEX_URL"],
+                    )
+                    self.assertEqual("/certs/pip.pem", captured["PIP_CERT"])
+                    self.assertEqual(
+                        "aarch64-apple-darwin",
+                        captured["CARGO_BUILD_TARGET"],
+                    )
+                    self.assertFalse(compiler_trace.exists())
 
     @unittest.skipIf(os.name == "nt", "symlink checks require POSIX")
     def test_write_roots_and_input_files_reject_symlink_replacement(self) -> None:
@@ -790,6 +1060,208 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
             ):
                 sidecar_builder.verify_staged_artifact(layout)
 
+    def test_extensionless_macho_is_verified_by_content_and_deduplicated(self) -> None:
+        for target, architecture in (
+            ("aarch64-apple-darwin", "arm64"),
+            ("x86_64-apple-darwin", "x86_64"),
+        ):
+            with (
+                self.subTest(target=target),
+                tempfile.TemporaryDirectory(prefix="KORYAO extensionless Mach-O ") as temporary,
+            ):
+                repo_root = Path(temporary) / "repo"
+                self.make_layout_fixture(repo_root)
+                layout = sidecar_builder.layout_for(repo_root, target)
+                layout.staged_support_directory.mkdir()
+                runtime = layout.staged_support_directory / "runtime.so"
+                helper = layout.staged_support_directory / "extensionless-helper"
+                self.write_thin_macho(layout.staged_executable, architecture)
+                self.write_thin_macho(runtime, architecture)
+                self.write_thin_macho(helper, architecture)
+                layout.staged_executable.chmod(0o755)
+                (layout.staged_support_directory / "helper-alias-one").symlink_to(helper.name)
+                (layout.staged_support_directory / "helper-alias-two").symlink_to(helper.name)
+                calls: list[tuple[str, str, Path]] = []
+
+                def fake_run(
+                    arguments: object,
+                    call_log: list[tuple[str, str, Path]] = calls,
+                    **_: object,
+                ) -> subprocess.CompletedProcess[str]:
+                    command = list(arguments)  # type: ignore[arg-type]
+                    tool = str(command[0])
+                    option = str(command[1])
+                    path = Path(command[-1])
+                    call_log.append((tool, option, path))
+                    header = path.read_bytes()[:8]
+                    cpu_type = int.from_bytes(header[4:8], "little")
+                    actual_architecture = {
+                        sidecar_builder.MACHO_CPU_TYPES["arm64"]: "arm64",
+                        sidecar_builder.MACHO_CPU_TYPES["x86_64"]: "x86_64",
+                    }[cpu_type]
+                    if tool == "file-tool":
+                        stdout = f"Mach-O 64-bit executable {actual_architecture}\n"
+                    elif tool == "lipo-tool":
+                        stdout = f"{actual_architecture}\n"
+                    elif option == "-L":
+                        stdout = (
+                            f"{path}:\n"
+                            "\t/usr/lib/libSystem.B.dylib "
+                            "(compatibility version 1.0.0, current version 1.0.0)\n"
+                        )
+                    else:
+                        stdout = f"{path}:\n"
+                    return subprocess.CompletedProcess(command, 0, stdout, "")
+
+                with (
+                    mock.patch.object(
+                        sidecar_builder,
+                        "_required_tool",
+                        side_effect=lambda name: f"{name}-tool",
+                    ),
+                    mock.patch.object(sidecar_builder, "_run", side_effect=fake_run),
+                    mock.patch.object(
+                        sidecar_builder,
+                        "check_vector60_runtime",
+                        return_value={"ok": True},
+                    ),
+                ):
+                    result = sidecar_builder.verify_staged_artifact(layout)
+
+                self.assertEqual(4, result["support_file_count"])
+                self.assertEqual(2, result["support_symlink_count"])
+                self.assertEqual(2, result["support_unique_payload_count"])
+                self.assertEqual(4, result["native_macho_logical_entry_count"])
+                self.assertEqual(2, result["native_mach_o_verified_count"])
+                self.assertEqual(0, result["non_native_logical_entry_count"])
+                self.assertEqual(0, result["non_native_file_magic_verified_count"])
+                helper_lipo_calls = [
+                    call for call in calls if call[0] == "lipo-tool" and call[2] == helper.resolve()
+                ]
+                helper_otool_calls = [
+                    call
+                    for call in calls
+                    if call[0] == "otool-tool" and call[2] == helper.resolve()
+                ]
+                self.assertEqual(1, len(helper_lipo_calls))
+                self.assertEqual(2, len(helper_otool_calls))
+
+    def test_extensionless_wrong_arch_macho_fails_closed(self) -> None:
+        cases = (
+            ("aarch64-apple-darwin", "arm64", "x86_64"),
+            ("x86_64-apple-darwin", "x86_64", "arm64"),
+        )
+        for target, expected_architecture, wrong_architecture in cases:
+            with (
+                self.subTest(target=target),
+                tempfile.TemporaryDirectory(prefix="KORYAO wrong-arch Mach-O ") as temporary,
+            ):
+                repo_root = Path(temporary) / "repo"
+                self.make_layout_fixture(repo_root)
+                layout = sidecar_builder.layout_for(repo_root, target)
+                layout.staged_support_directory.mkdir()
+                runtime = layout.staged_support_directory / "runtime.so"
+                helper = layout.staged_support_directory / "extensionless-helper"
+                self.write_thin_macho(layout.staged_executable, expected_architecture)
+                self.write_thin_macho(runtime, expected_architecture)
+                self.write_thin_macho(helper, wrong_architecture)
+                layout.staged_executable.chmod(0o755)
+
+                def fake_run(
+                    arguments: object,
+                    **_: object,
+                ) -> subprocess.CompletedProcess[str]:
+                    command = list(arguments)  # type: ignore[arg-type]
+                    tool = str(command[0])
+                    option = str(command[1])
+                    path = Path(command[-1])
+                    header = path.read_bytes()[:8]
+                    actual_architecture = {
+                        sidecar_builder.MACHO_CPU_TYPES["arm64"]: "arm64",
+                        sidecar_builder.MACHO_CPU_TYPES["x86_64"]: "x86_64",
+                    }[int.from_bytes(header[4:8], "little")]
+                    if tool == "file-tool":
+                        stdout = f"Mach-O 64-bit executable {actual_architecture}\n"
+                    elif tool == "lipo-tool":
+                        stdout = f"{actual_architecture}\n"
+                    elif option == "-L":
+                        stdout = (
+                            f"{path}:\n"
+                            "\t/usr/lib/libSystem.B.dylib "
+                            "(compatibility version 1.0.0, current version 1.0.0)\n"
+                        )
+                    else:
+                        stdout = f"{path}:\n"
+                    return subprocess.CompletedProcess(command, 0, stdout, "")
+
+                with (
+                    mock.patch.object(
+                        sidecar_builder,
+                        "_required_tool",
+                        side_effect=lambda name: f"{name}-tool",
+                    ),
+                    mock.patch.object(sidecar_builder, "_run", side_effect=fake_run),
+                    mock.patch.object(
+                        sidecar_builder,
+                        "check_vector60_runtime",
+                        return_value={"ok": True},
+                    ),
+                    self.assertRaisesRegex(
+                        sidecar_builder.SidecarBuildError,
+                        "Mach-O CPU type",
+                    ),
+                ):
+                    sidecar_builder.verify_staged_artifact(layout)
+
+    def test_native_suffix_with_non_macho_payload_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="KORYAO non-Mach-O native suffix ") as temporary:
+            layout = self.make_layout_fixture(Path(temporary) / "repo")
+            layout.staged_support_directory.mkdir()
+            runtime = layout.staged_support_directory / "runtime.so"
+            runtime.write_bytes(b"ordinary data")
+            self.write_thin_macho(layout.staged_executable)
+            layout.staged_executable.chmod(0o755)
+
+            def fake_run(
+                arguments: object,
+                **_: object,
+            ) -> subprocess.CompletedProcess[str]:
+                command = list(arguments)  # type: ignore[arg-type]
+                tool = str(command[0])
+                option = str(command[1])
+                path = Path(command[-1])
+                if tool == "file-tool":
+                    stdout = (
+                        "ASCII text\n"
+                        if path == runtime.resolve()
+                        else "Mach-O 64-bit executable arm64\n"
+                    )
+                elif tool == "lipo-tool":
+                    stdout = "arm64\n"
+                elif option == "-L":
+                    stdout = (
+                        f"{path}:\n"
+                        "\t/usr/lib/libSystem.B.dylib "
+                        "(compatibility version 1.0.0, current version 1.0.0)\n"
+                    )
+                else:
+                    stdout = f"{path}:\n"
+                return subprocess.CompletedProcess(command, 0, stdout, "")
+
+            with (
+                mock.patch.object(
+                    sidecar_builder,
+                    "_required_tool",
+                    side_effect=lambda name: f"{name}-tool",
+                ),
+                mock.patch.object(sidecar_builder, "_run", side_effect=fake_run),
+                self.assertRaisesRegex(
+                    sidecar_builder.SidecarBuildError,
+                    "native-extension entry is not a Mach-O",
+                ),
+            ):
+                sidecar_builder.verify_staged_artifact(layout)
+
     @unittest.skipUnless(sys.platform == "darwin", "Darwin system tooling required")
     def test_verifier_ignores_fake_path_tools_and_rejects_non_macho(self) -> None:
         with tempfile.TemporaryDirectory(prefix="KORYAO fake Mach-O tools ") as temporary:
@@ -937,6 +1409,74 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
                 finally:
                     sidecar_tester._terminate(capture)
 
+    def test_output_audit_bounded_path_canonicalization_and_near_misses(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="KORYAO encoded path audit ") as temporary:
+            private_path = Path(temporary) / "private app data"
+            raw = os.fspath(private_path.resolve())
+            uri = private_path.resolve().as_uri()
+            fully_encoded_uri = sidecar_tester.urllib.parse.quote(uri, safe="")
+            encoded_raw = sidecar_tester.urllib.parse.quote(raw, safe="")
+            double_encoded_raw = sidecar_tester.urllib.parse.quote(encoded_raw, safe="")
+            leaks = (
+                raw,
+                uri,
+                fully_encoded_uri,
+                double_encoded_raw,
+                sidecar_tester.PERCENT_ESCAPE_PATTERN.sub(
+                    lambda match: match.group(0).lower(),
+                    fully_encoded_uri,
+                ),
+                sidecar_tester.PERCENT_ESCAPE_PATTERN.sub(
+                    lambda match: match.group(0).lower(),
+                    double_encoded_raw,
+                ),
+                raw.replace("/", r"\/"),
+                sidecar_tester.urllib.parse.quote(
+                    raw.replace("/", r"\/"),
+                    safe="",
+                ),
+            )
+            for leak in leaks:
+                with self.subTest(leak=leak):
+                    audit = sidecar_tester.OutputAudit()
+                    audit.register(private_paths=(private_path,))
+                    with self.assertRaises(sidecar_tester.SidecarTestError) as raised:
+                        audit.inspect({"nested": ["safe", leak]}, stage="encoded fixture")
+                    self.assertTrue(audit.controlled_path_exposed)
+                    self.assertNotIn(leak, str(raised.exception))
+
+            near_miss = raw[:-1] + ("x" if raw[-1] != "x" else "y")
+            harmless_values = (
+                "progress=100% and malformed=%ZZ%2",
+                private_path.name,
+                sidecar_tester.urllib.parse.quote(
+                    sidecar_tester.urllib.parse.quote(
+                        "https://example.invalid/public/resource",
+                        safe="",
+                    ),
+                    safe="",
+                ),
+                sidecar_tester.urllib.parse.quote(
+                    sidecar_tester.urllib.parse.quote(near_miss, safe=""),
+                    safe="",
+                ),
+                sidecar_tester.urllib.parse.quote_plus(raw, safe=""),
+            )
+            audit = sidecar_tester.OutputAudit()
+            audit.register(private_paths=(private_path,))
+            for harmless in harmless_values:
+                with self.subTest(harmless=harmless):
+                    audit.inspect(harmless, stage="near-miss fixture")
+            self.assertFalse(audit.controlled_path_exposed)
+
+            deeply_encoded = raw
+            for _ in range(sidecar_tester.MAX_PATH_PERCENT_DECODE_ROUNDS + 3):
+                deeply_encoded = sidecar_tester.urllib.parse.quote(deeply_encoded, safe="")
+            self.assertLessEqual(
+                len(sidecar_tester._path_text_views(deeply_encoded)),
+                sidecar_tester.MAX_PATH_PERCENT_DECODE_ROUNDS + 1,
+            )
+
     def test_every_http_payload_stage_rejects_credentials_and_private_paths(
         self,
     ) -> None:
@@ -1008,23 +1548,37 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
                             )
                         self.assertNotIn(leak, str(raised.exception))
 
+            raw_private_path = os.fspath(private_path.resolve())
+            private_uri = private_path.resolve().as_uri()
+            fully_encoded_uri = sidecar_tester.urllib.parse.quote(private_uri, safe="")
+            double_encoded_raw = sidecar_tester.urllib.parse.quote(
+                sidecar_tester.urllib.parse.quote(raw_private_path, safe=""),
+                safe="",
+            )
             encoded_leaks = (
-                private_path.resolve().as_uri(),
+                private_uri,
                 sidecar_tester.urllib.parse.quote(
-                    os.fspath(private_path.resolve()),
+                    raw_private_path,
                     safe="/:",
                 ),
                 sidecar_tester.urllib.parse.quote(
-                    os.fspath(private_path.resolve()),
+                    raw_private_path,
                     safe="",
                 ),
-                os.fspath(private_path.resolve()).replace("/", r"\/"),
+                raw_private_path.replace("/", r"\/"),
+                fully_encoded_uri,
+                double_encoded_raw,
+                sidecar_tester.urllib.parse.quote(
+                    raw_private_path.replace("/", r"\/"),
+                    safe="",
+                ),
                 sidecar_tester.PERCENT_ESCAPE_PATTERN.sub(
                     lambda match: match.group(0).lower(),
-                    sidecar_tester.urllib.parse.quote(
-                        os.fspath(private_path.resolve()),
-                        safe="",
-                    ),
+                    fully_encoded_uri,
+                ),
+                sidecar_tester.PERCENT_ESCAPE_PATTERN.sub(
+                    lambda match: match.group(0).lower(),
+                    double_encoded_raw,
                 ),
             )
             for leak in encoded_leaks:
