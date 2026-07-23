@@ -12,7 +12,13 @@ case $- in
             __PYVENV_LAUNCHER__ BASH_ENV ENV PS4 BASH_XTRACEFD \
             xcrun_log xcrun_nocache xcrun_verbose
         case $0 in
-            */*) exec /usr/bin/python3 -I "${0%/*}/sidecar_launcher.py" build "$@" ;;
+            */*)
+                launcher_path=${0%/*}/sidecar_launcher.py
+                if [ -L "$0" ] || [ -L "$launcher_path" ] || [ ! -f "$launcher_path" ]; then
+                    exec /usr/bin/false
+                fi
+                exec /usr/bin/python3 -I "$launcher_path" build "$@"
+                ;;
             *) /usr/bin/false ;;
         esac
         ;;

@@ -231,6 +231,8 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
                 self.assertIn("sidecar_launcher.py", text)
                 self.assertIn("case $- in", text)
                 self.assertIn("unset DEVELOPER_DIR SDKROOT TOOLCHAINS", text)
+                self.assertIn('[ -L "$0" ]', text)
+                self.assertIn('[ -L "$launcher_path" ]', text)
                 self.assertEqual(1, text.count("exec /usr/bin/python3 -I"))
                 for shell_operation in (
                     "\nset ",
@@ -290,6 +292,59 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
                         completed.stderr,
                     )
                     self.assertNotIn(os.fspath(root), completed.stderr)
+
+    @unittest.skipUnless(sys.platform == "darwin", "Darwin wrapper symlink check")
+    def test_wrappers_reject_symlinked_wrapper_or_sibling_launcher(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="stage4-wrapper-symlink-") as temporary:
+            root = Path(temporary)
+            for wrapper_name in ("Build-Sidecar.sh", "Test-Sidecar.sh"):
+                with self.subTest(kind="wrapper", wrapper=wrapper_name):
+                    directory = root / f"wrapper-{wrapper_name}"
+                    directory.mkdir()
+                    trace = directory / "launcher.trace"
+                    (directory / "sidecar_launcher.py").write_text(
+                        "from pathlib import Path\n"
+                        f"Path({os.fspath(trace)!r}).write_text('executed')\n",
+                        encoding="utf-8",
+                    )
+                    wrapper = directory / wrapper_name
+                    wrapper.symlink_to(SCRIPTS_DIR / wrapper_name)
+
+                    completed = subprocess.run(
+                        [wrapper, "--print-plan"],
+                        check=False,
+                        capture_output=True,
+                    )
+
+                    self.assertNotEqual(0, completed.returncode)
+                    self.assertFalse(trace.exists())
+
+                with self.subTest(kind="launcher", wrapper=wrapper_name):
+                    directory = root / f"launcher-{wrapper_name}"
+                    directory.mkdir()
+                    wrapper = directory / wrapper_name
+                    wrapper.write_text(
+                        (SCRIPTS_DIR / wrapper_name).read_text(encoding="utf-8"),
+                        encoding="utf-8",
+                    )
+                    wrapper.chmod(0o755)
+                    trace = directory / "launcher.trace"
+                    outside_launcher = root / f"outside-{wrapper_name}.py"
+                    outside_launcher.write_text(
+                        "from pathlib import Path\n"
+                        f"Path({os.fspath(trace)!r}).write_text('executed')\n",
+                        encoding="utf-8",
+                    )
+                    (directory / "sidecar_launcher.py").symlink_to(outside_launcher)
+
+                    completed = subprocess.run(
+                        [wrapper, "--print-plan"],
+                        check=False,
+                        capture_output=True,
+                    )
+
+                    self.assertNotEqual(0, completed.returncode)
+                    self.assertFalse(trace.exists())
 
     def test_python_and_pip_environments_remove_injection_and_install_redirects(
         self,

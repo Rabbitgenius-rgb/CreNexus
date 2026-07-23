@@ -31,6 +31,7 @@ binaries/
 wrapper 随后只进入固定的系统 Python launcher，由 launcher 构造明确 allowlist，
 再启动仓库 `.venv` 中的实际 builder/tester。仓库 `.venv` 不存在时会 fail closed，
 不会回退到受 Xcode toolchain 环境影响的系统 Python shim。
+wrapper 不接受 symlink 调用，sibling launcher 也必须是非 symlink 普通文件。
 
 脚本会动态解析当前 host triple。`x86_64-apple-darwin` 有参数与路径测试，
 但没有在 arm64 构建中冒充 universal binary。Darwin one-folder 产物包含固定版本的
