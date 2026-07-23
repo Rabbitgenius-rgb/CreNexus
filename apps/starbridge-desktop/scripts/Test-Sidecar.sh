@@ -1,21 +1,20 @@
-#!/bin/sh
-set -eu
-
-PATH=/usr/bin:/bin:/usr/sbin:/sbin
-export PATH
-unset BASH_ENV ENV __PYVENV_LAUNCHER__ 2>/dev/null || true
-unset DYLD_INSERT_LIBRARIES DYLD_LIBRARY_PATH DYLD_FRAMEWORK_PATH \
-    DYLD_FALLBACK_LIBRARY_PATH DYLD_FALLBACK_FRAMEWORK_PATH \
-    LD_PRELOAD LD_LIBRARY_PATH 2>/dev/null || true
-
-SCRIPT_DIR=$(CDPATH= cd -- "$(/usr/bin/dirname -- "$0")" && pwd)
-REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/../../.." && pwd)
-. "$SCRIPT_DIR/sidecar_environment.sh"
-
-if [ -x "$REPO_ROOT/.venv/bin/python" ]; then
-    RUNNER=$REPO_ROOT/.venv/bin/python
-else
-    RUNNER=/usr/bin/python3
-fi
-
-sidecar_exec_clean "$RUNNER" "$SCRIPT_DIR/sidecar_tester.py" "$@"
+#!/bin/sh -p
+case $- in
+    *p*)
+        unset DEVELOPER_DIR SDKROOT TOOLCHAINS XCRUN_CACHE_PATH \
+            DYLD_INSERT_LIBRARIES DYLD_LIBRARY_PATH DYLD_FRAMEWORK_PATH \
+            DYLD_FALLBACK_LIBRARY_PATH DYLD_FALLBACK_FRAMEWORK_PATH \
+            DYLD_FORCE_FLAT_NAMESPACE DYLD_PRINT_TO_FILE \
+            LD_PRELOAD LD_LIBRARY_PATH \
+            PYTHONHOME PYTHONPATH PYTHONSTARTUP PYTHONUSERBASE \
+            PYTHONINSPECT PYTHONWARNINGS PYTHONBREAKPOINT PYTHONSAFEPATH \
+            PYTHONPLATLIBDIR PYTHONEXECUTABLE _PYTHON_SYSCONFIGDATA_NAME \
+            __PYVENV_LAUNCHER__ BASH_ENV ENV PS4 BASH_XTRACEFD \
+            xcrun_log xcrun_nocache xcrun_verbose
+        case $0 in
+            */*) exec /usr/bin/python3 -I "${0%/*}/sidecar_launcher.py" test "$@" ;;
+            *) /usr/bin/false ;;
+        esac
+        ;;
+    *) /usr/bin/false ;;
+esac

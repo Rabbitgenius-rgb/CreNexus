@@ -26,6 +26,12 @@ binaries/
 ./scripts/Test-Sidecar.sh --skip-build
 ```
 
+必须像上面这样直接执行 wrapper，让受保护的 shebang 在 shell 读取继承环境前生效；
+不要改成 `sh ./scripts/Build-Sidecar.sh` 或 `bash ./scripts/Test-Sidecar.sh`。
+wrapper 随后只进入固定的系统 Python launcher，由 launcher 构造明确 allowlist，
+再启动仓库 `.venv` 中的实际 builder/tester。仓库 `.venv` 不存在时会 fail closed，
+不会回退到受 Xcode toolchain 环境影响的系统 Python shim。
+
 脚本会动态解析当前 host triple。`x86_64-apple-darwin` 有参数与路径测试，
 但没有在 arm64 构建中冒充 universal binary。Darwin one-folder 产物包含固定版本的
 Vector60 Python runtime；当前没有打包 Node/SVGO，因此 SVGO 路径明确保持未包含。

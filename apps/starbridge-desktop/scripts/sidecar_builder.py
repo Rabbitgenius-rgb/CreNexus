@@ -414,8 +414,8 @@ def _validate_layout_roots(layout: BuildLayout) -> None:
             "Darwin sidecar tester",
         ),
         (
-            layout.desktop_root / "scripts" / "sidecar_environment.sh",
-            "Darwin sidecar environment wrapper",
+            layout.desktop_root / "scripts" / "sidecar_launcher.py",
+            "Darwin sidecar environment launcher",
         ),
         (
             layout.desktop_root / "scripts" / "starbridge-sidecar.spec",

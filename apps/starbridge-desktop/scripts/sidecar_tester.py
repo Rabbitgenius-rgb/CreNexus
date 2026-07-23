@@ -47,6 +47,9 @@ PNG_1X1 = base64.b64decode(
 CSS_URL_PATTERN = re.compile(r"url\(\s*([^)]+?)\s*\)", re.IGNORECASE)
 PERCENT_ESCAPE_PATTERN = re.compile(r"%[0-9A-Fa-f]{2}")
 JSON_ESCAPED_SLASH_PATTERN = re.compile(r"\\+/")
+FORM_ENCODED_POSIX_PATH_TOKEN_PATTERN = re.compile(
+    r"%2[fF](?:(?:%[0-9A-Fa-f]{2})|[A-Za-z0-9._~+\-])*"
+)
 MAX_PATH_PERCENT_DECODE_ROUNDS = 4
 
 
@@ -71,8 +74,25 @@ def _audit_text_fragments(value: object) -> list[str]:
     return [json.dumps(value, ensure_ascii=False, sort_keys=True)]
 
 
+def _decode_path_text_layer(value: str) -> str:
+    """Decode one layer, applying form semantics only to encoded absolute-path tokens."""
+    decoded: list[str] = []
+    previous_end = 0
+    for match in FORM_ENCODED_POSIX_PATH_TOKEN_PATTERN.finditer(value):
+        decoded.append(
+            urllib.parse.unquote(
+                value[previous_end : match.start()],
+                errors="replace",
+            )
+        )
+        decoded.append(urllib.parse.unquote_plus(match.group(0), errors="replace"))
+        previous_end = match.end()
+    decoded.append(urllib.parse.unquote(value[previous_end:], errors="replace"))
+    return "".join(decoded)
+
+
 def _path_text_views(value: str) -> tuple[str, ...]:
-    """Return bounded canonical views used only for private-path detection."""
+    """Return at most five canonical views used only for private-path detection."""
     views: list[str] = []
     seen: set[str] = set()
     current = value
@@ -87,7 +107,7 @@ def _path_text_views(value: str) -> tuple[str, ...]:
             or PERCENT_ESCAPE_PATTERN.search(normalized) is None
         ):
             break
-        decoded = urllib.parse.unquote(normalized, errors="replace")
+        decoded = _decode_path_text_layer(normalized)
         if decoded == normalized:
             break
         current = decoded

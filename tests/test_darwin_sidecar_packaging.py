@@ -3,10 +3,12 @@ from __future__ import annotations
 import copy
 import json
 import os
+import signal
 import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -17,6 +19,7 @@ if os.fspath(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, os.fspath(SCRIPTS_DIR))
 
 import sidecar_builder  # noqa: E402
+import sidecar_launcher  # noqa: E402
 import sidecar_tester  # noqa: E402
 
 
@@ -42,8 +45,8 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
             "requirements-sidecar-build.txt",
             "sidecar_entry.py",
             "sidecar_builder.py",
+            "sidecar_launcher.py",
             "sidecar_tester.py",
-            "sidecar_environment.sh",
             "starbridge-sidecar.spec",
         ):
             (scripts / name).write_text("# fixture\n", encoding="utf-8")
@@ -202,26 +205,91 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
         self.assertIn('"PYINSTALLER_CONFIG_DIR"', builder)
 
     @unittest.skipIf(os.name == "nt", "POSIX shell checks do not run on Windows")
-    def test_posix_wrappers_are_executable_and_parse_as_sh(self) -> None:
-        environment_helper = SCRIPTS_DIR / "sidecar_environment.sh"
-        subprocess.run(["sh", "-n", environment_helper], check=True)
-        helper_text = environment_helper.read_text(encoding="utf-8")
-        self.assertIn('exec /usr/bin/env -i "PATH=/usr/bin:/bin:/usr/sbin:/sbin"', helper_text)
-        for name in (
-            *sidecar_builder.ENVIRONMENT_PASSTHROUGH_ALLOWLIST,
-            *sidecar_builder.PIP_NETWORK_ENVIRONMENT_ALLOWLIST,
-            "CARGO_BUILD_TARGET",
-        ):
-            self.assertIn(f'"${{{name}+x}}"', helper_text)
+    def test_posix_wrappers_use_privileged_minimal_launcher(self) -> None:
+        self.assertEqual(
+            sidecar_builder.ENVIRONMENT_PASSTHROUGH_ALLOWLIST,
+            sidecar_launcher.ENVIRONMENT_PASSTHROUGH_ALLOWLIST,
+        )
+        self.assertEqual(
+            sidecar_builder.PIP_NETWORK_ENVIRONMENT_ALLOWLIST,
+            sidecar_launcher.PIP_NETWORK_ENVIRONMENT_ALLOWLIST,
+        )
+        self.assertEqual(sidecar_builder.SANITIZED_PATH, sidecar_launcher.SANITIZED_PATH)
+        repository_runner, launcher_command = sidecar_launcher._launcher_command(
+            ["sidecar_launcher.py", "build", "--print-plan"]
+        )
+        self.assertEqual(REPO_ROOT / ".venv" / "bin" / "python", repository_runner)
+        self.assertEqual(os.fspath(repository_runner), launcher_command[0])
         for name in ("Build-Sidecar.sh", "Test-Sidecar.sh"):
             path = SCRIPTS_DIR / name
             with self.subTest(path=path):
                 self.assertTrue(path.stat().st_mode & stat.S_IXUSR)
-                subprocess.run(["sh", "-n", path], check=True)
+                subprocess.run(["/bin/sh", "-p", "-n", path], check=True)
                 text = path.read_text(encoding="utf-8")
-                self.assertIn('. "$SCRIPT_DIR/sidecar_environment.sh"', text)
-                self.assertIn("sidecar_exec_clean", text)
-                self.assertIn("__PYVENV_LAUNCHER__", text)
+                self.assertTrue(text.startswith("#!/bin/sh -p\n"))
+                self.assertEqual(1, text.count("/usr/bin/python3 -I"))
+                self.assertIn("sidecar_launcher.py", text)
+                self.assertIn("case $- in", text)
+                self.assertIn("unset DEVELOPER_DIR SDKROOT TOOLCHAINS", text)
+                self.assertEqual(1, text.count("exec /usr/bin/python3 -I"))
+                for shell_operation in (
+                    "\nset ",
+                    "\ncd ",
+                    "\npwd ",
+                    "\nbuiltin ",
+                    "\ncommand ",
+                    "\n[ ",
+                ):
+                    self.assertNotIn(shell_operation, text)
+                explicit_unprivileged = subprocess.run(
+                    ["/bin/sh", path, "--print-plan"],
+                    check=False,
+                    capture_output=True,
+                )
+                self.assertNotEqual(0, explicit_unprivileged.returncode)
+        staging_readme = (SCRIPTS_DIR.parent / "src-tauri" / "binaries" / "README.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("./scripts/Build-Sidecar.sh", staging_readme)
+        self.assertIn("./scripts/Test-Sidecar.sh --skip-build", staging_readme)
+        self.assertIn(
+            "不要改成 `sh ./scripts/Build-Sidecar.sh` 或 `bash ./scripts/Test-Sidecar.sh`",
+            staging_readme,
+        )
+
+    @unittest.skipIf(os.name == "nt", "POSIX launcher check")
+    def test_launcher_fails_closed_without_repository_python(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="stage4-missing-venv-") as temporary:
+            root = Path(temporary) / "repo"
+            scripts = root / "apps" / "starbridge-desktop" / "scripts"
+            scripts.mkdir(parents=True)
+            (scripts / "sidecar_launcher.py").write_text(
+                (SCRIPTS_DIR / "sidecar_launcher.py").read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+            for entrypoint in ("sidecar_builder.py", "sidecar_tester.py"):
+                (scripts / entrypoint).write_text("# fixture\n", encoding="utf-8")
+            for wrapper_name in ("Build-Sidecar.sh", "Test-Sidecar.sh"):
+                with self.subTest(wrapper=wrapper_name):
+                    wrapper = scripts / wrapper_name
+                    wrapper.write_text(
+                        (SCRIPTS_DIR / wrapper_name).read_text(encoding="utf-8"),
+                        encoding="utf-8",
+                    )
+                    wrapper.chmod(0o755)
+                    completed = subprocess.run(
+                        [wrapper, "--print-plan"],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                    )
+                    self.assertNotEqual(0, completed.returncode)
+                    self.assertIn(
+                        "repository Python environment is unavailable",
+                        completed.stderr,
+                    )
+                    self.assertNotIn(os.fspath(root), completed.stderr)
 
     def test_python_and_pip_environments_remove_injection_and_install_redirects(
         self,
@@ -341,6 +409,35 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
         self.assertEqual(os.devnull, pip_environment["PIP_CONFIG_FILE"])
         self.assertEqual("1", pip_environment["PIP_NO_INPUT"])
         self.assertEqual("1", pip_environment["PIP_DISABLE_PIP_VERSION_CHECK"])
+
+        launcher_environment = sidecar_launcher.sanitized_launcher_environment(
+            {
+                **inherited,
+                "CARGO_BUILD_TARGET": "aarch64-apple-darwin",
+            }
+        )
+        for name, value in safe_environment.items():
+            self.assertEqual(value, launcher_environment[name])
+        for name, value in pip_environment_allowlist.items():
+            self.assertEqual(value, launcher_environment[name])
+        self.assertEqual(
+            "aarch64-apple-darwin",
+            launcher_environment["CARGO_BUILD_TARGET"],
+        )
+        self.assertEqual(sidecar_builder.SANITIZED_PATH, launcher_environment["PATH"])
+        self.assertEqual(os.devnull, launcher_environment["PIP_CONFIG_FILE"])
+        self.assertEqual("1", launcher_environment["PIP_NO_INPUT"])
+        self.assertEqual(
+            "1",
+            launcher_environment["PIP_DISABLE_PIP_VERSION_CHECK"],
+        )
+        for name in dangerous_names[1:]:
+            if name in {
+                "CARGO_BUILD_TARGET",
+                "PIP_CONFIG_FILE",
+            }:
+                continue
+            self.assertNotIn(name, launcher_environment)
 
     @unittest.skipUnless(sys.platform == "darwin", "Darwin compiler isolation test")
     def test_source_build_does_not_execute_inherited_fake_compiler(self) -> None:
@@ -467,7 +564,6 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
 
             completed = subprocess.run(
                 [
-                    "sh",
                     SCRIPTS_DIR / "Build-Sidecar.sh",
                     "--print-plan",
                     "--target-triple",
@@ -511,7 +607,6 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
 
             completed = subprocess.run(
                 [
-                    "/bin/sh",
                     SCRIPTS_DIR / "Build-Sidecar.sh",
                     "--print-plan",
                     "--target-triple",
@@ -526,6 +621,141 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
 
             self.assertEqual(0, completed.returncode, completed.stderr)
             self.assertFalse(trace.exists())
+
+    @unittest.skipUnless(sys.platform == "darwin", "macOS privileged shell test")
+    def test_wrappers_ignore_bash_functions_xtrace_and_secret_expansion(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="stage4-bash-startup-") as temporary:
+            root = Path(temporary)
+            function_trace = root / "function.trace"
+            ps4_trace = root / "ps4.trace"
+            developer_trace = root / "developer.trace"
+            fake_developer = root / "fake-developer"
+            fake_xcrun = fake_developer / "usr" / "bin" / "xcrun"
+            fake_xcrun.parent.mkdir(parents=True)
+            fake_xcrun.write_text(
+                f"#!/bin/sh\n/usr/bin/printf executed > {os.fspath(developer_trace)!r}\nexit 97\n",
+                encoding="utf-8",
+            )
+            fake_xcrun.chmod(0o755)
+            sentinel = "stage4-pip-credential-sentinel"
+            environment = os.environ.copy()
+            for name in (
+                "cd",
+                "pwd",
+                "[",
+                "set",
+                "unset",
+                "builtin",
+                "command",
+                "exec",
+            ):
+                environment[f"BASH_FUNC_{name}%%"] = (
+                    f"() {{ /usr/bin/printf '%s\\n' {name!r} >> {os.fspath(function_trace)!r}; }}"
+                )
+            environment.update(
+                {
+                    "SHELLOPTS": "xtrace",
+                    "PS4": (f"$(/usr/bin/printf x >> {os.fspath(ps4_trace)!r})stage4-trace "),
+                    "PIP_INDEX_URL": (f"https://user:{sentinel}@packages.invalid/simple"),
+                    "DEVELOPER_DIR": os.fspath(fake_developer),
+                    "SDKROOT": "/tmp/evil-sdk",
+                    "TOOLCHAINS": "evil-toolchain",
+                    "XCRUN_CACHE_PATH": "/tmp/evil-xcrun-cache",
+                }
+            )
+
+            for wrapper_name in ("Build-Sidecar.sh", "Test-Sidecar.sh"):
+                with self.subTest(wrapper=wrapper_name):
+                    completed = subprocess.run(
+                        [
+                            SCRIPTS_DIR / wrapper_name,
+                            "--print-plan",
+                            "--target-triple",
+                            "aarch64-apple-darwin",
+                        ],
+                        env=environment,
+                        check=False,
+                        capture_output=True,
+                    )
+                    stdout = completed.stdout.decode("utf-8", errors="replace")
+                    stderr = completed.stderr.decode("utf-8", errors="replace")
+                    self.assertEqual(0, completed.returncode, stderr)
+                    self.assertEqual(
+                        "aarch64-apple-darwin",
+                        json.loads(stdout)["target_triple"],
+                    )
+                    self.assertNotIn(sentinel, stdout)
+                    self.assertNotIn(sentinel, stderr)
+                    self.assertFalse(function_trace.exists())
+                    self.assertFalse(ps4_trace.exists())
+                    self.assertFalse(developer_trace.exists())
+
+    @unittest.skipIf(os.name == "nt", "POSIX exec-chain test")
+    def test_wrapper_exec_chain_preserves_pid_and_termination(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="stage4-wrapper-exec-") as temporary:
+            root = Path(temporary) / "repo"
+            scripts = root / "apps" / "starbridge-desktop" / "scripts"
+            runner = root / ".venv" / "bin" / "python"
+            scripts.mkdir(parents=True)
+            runner.parent.mkdir(parents=True)
+            runner.symlink_to(Path(sys.executable).resolve())
+            (scripts / "sidecar_launcher.py").write_text(
+                (SCRIPTS_DIR / "sidecar_launcher.py").read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+            for entrypoint in ("sidecar_builder.py", "sidecar_tester.py"):
+                (scripts / entrypoint).write_text("# fixture\n", encoding="utf-8")
+
+            for wrapper_name in ("Build-Sidecar.sh", "Test-Sidecar.sh"):
+                with self.subTest(wrapper=wrapper_name):
+                    wrapper = scripts / wrapper_name
+                    wrapper.write_text(
+                        (SCRIPTS_DIR / wrapper_name).read_text(encoding="utf-8"),
+                        encoding="utf-8",
+                    )
+                    wrapper.chmod(0o755)
+                    pid_file = Path(temporary) / f"{wrapper_name}.pid"
+                    entrypoint = scripts / (
+                        "sidecar_builder.py"
+                        if wrapper_name == "Build-Sidecar.sh"
+                        else "sidecar_tester.py"
+                    )
+                    entrypoint.write_text(
+                        "import os, time\n"
+                        f"with open({os.fspath(pid_file)!r}, 'w', encoding='utf-8') as handle:\n"
+                        "    handle.write(str(os.getpid()))\n"
+                        "time.sleep(30)\n",
+                        encoding="utf-8",
+                    )
+
+                    process = subprocess.Popen(
+                        [wrapper, "argument with spaces"],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                    runner_pid: int | None = None
+                    try:
+                        deadline = time.monotonic() + 5
+                        while time.monotonic() < deadline and not pid_file.is_file():
+                            if process.poll() is not None:
+                                break
+                            time.sleep(0.02)
+                        self.assertTrue(pid_file.is_file())
+                        runner_pid = int(pid_file.read_text(encoding="utf-8"))
+                        self.assertEqual(process.pid, runner_pid)
+                        process.terminate()
+                        process.wait(timeout=5)
+                        with self.assertRaises(ProcessLookupError):
+                            os.kill(runner_pid, 0)
+                    finally:
+                        if process.poll() is None:
+                            process.terminate()
+                            process.wait(timeout=5)
+                        if runner_pid is not None and runner_pid != process.pid:
+                            try:
+                                os.kill(runner_pid, signal.SIGTERM)
+                            except ProcessLookupError:
+                                pass
 
     @unittest.skipIf(os.name == "nt", "POSIX wrapper environment checks")
     def test_wrappers_pass_only_the_explicit_environment_allowlist(self) -> None:
@@ -553,8 +783,25 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
             "PYTHONPATH",
             "DyLd_LIBRARY_PATH",
             "Ld_PRELOAD",
+            "DEVELOPER_DIR",
+            "SDKROOT",
+            "TOOLCHAINS",
+            "XCRUN_CACHE_PATH",
+            "xcrun_log",
+            "xcrun_nocache",
+            "xcrun_verbose",
             "BASH_ENV",
             "ENV",
+            "SHELLOPTS",
+            "PS4",
+            "BASH_FUNC_cd%%",
+            "BASH_FUNC_pwd%%",
+            "BASH_FUNC_[%%",
+            "BASH_FUNC_set%%",
+            "BASH_FUNC_unset%%",
+            "BASH_FUNC_builtin%%",
+            "BASH_FUNC_command%%",
+            "BASH_FUNC_exec%%",
         )
         with tempfile.TemporaryDirectory(prefix="KORYAO wrapper environment ") as temporary:
             root = Path(temporary) / "repo"
@@ -562,10 +809,13 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
             runner = root / ".venv" / "bin" / "python"
             scripts.mkdir(parents=True)
             runner.parent.mkdir(parents=True)
-            (scripts / "sidecar_environment.sh").write_text(
-                (SCRIPTS_DIR / "sidecar_environment.sh").read_text(encoding="utf-8"),
+            runner.symlink_to(Path(sys.executable).resolve())
+            (scripts / "sidecar_launcher.py").write_text(
+                (SCRIPTS_DIR / "sidecar_launcher.py").read_text(encoding="utf-8"),
                 encoding="utf-8",
             )
+            for entrypoint in ("sidecar_builder.py", "sidecar_tester.py"):
+                (scripts / entrypoint).write_text("# fixture\n", encoding="utf-8")
             compiler_trace = Path(temporary) / "fake-compiler.trace"
             fake_compiler = Path(temporary) / "fake-compiler"
             fake_compiler.write_text(
@@ -581,12 +831,19 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
                         (SCRIPTS_DIR / wrapper_name).read_text(encoding="utf-8"),
                         encoding="utf-8",
                     )
+                    wrapper.chmod(0o755)
                     capture = Path(temporary) / f"{wrapper_name}.environment"
-                    runner.write_text(
-                        f'#!/bin/sh\n/usr/bin/env > "{capture}"\n',
+                    expected_entrypoint = scripts / (
+                        "sidecar_builder.py"
+                        if wrapper_name == "Build-Sidecar.sh"
+                        else "sidecar_tester.py"
+                    )
+                    expected_entrypoint.write_text(
+                        "import json, os, sys\n"
+                        f"with open({os.fspath(capture)!r}, 'w', encoding='utf-8') as handle:\n"
+                        "    json.dump({'environment': dict(os.environ), 'arguments': sys.argv}, handle)\n",
                         encoding="utf-8",
                     )
-                    runner.chmod(0o755)
                     environment = {
                         **os.environ,
                         **{name: os.fspath(fake_compiler) for name in dangerous_names},
@@ -600,8 +857,15 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
                         "PIP_CERT": "/certs/pip.pem",
                         "CARGO_BUILD_TARGET": "aarch64-apple-darwin",
                     }
+                    original_arguments = (
+                        "--print-plan",
+                        "value with spaces",
+                        "",
+                        "semi;colon",
+                        "$(not-executed)",
+                    )
                     completed = subprocess.run(
-                        ["/bin/sh", wrapper, "--print-plan"],
+                        [wrapper, *original_arguments],
                         env=environment,
                         check=False,
                         capture_output=True,
@@ -610,10 +874,14 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
                     )
 
                     self.assertEqual(0, completed.returncode, completed.stderr)
-                    captured = dict(
-                        line.split("=", 1)
-                        for line in capture.read_text(encoding="utf-8").splitlines()
-                        if "=" in line
+                    snapshot = json.loads(capture.read_text(encoding="utf-8"))
+                    captured = snapshot["environment"]
+                    self.assertEqual(
+                        [
+                            os.fspath(expected_entrypoint),
+                            *original_arguments,
+                        ],
+                        snapshot["arguments"],
                     )
                     for name in dangerous_names:
                         self.assertNotIn(name, captured)
@@ -644,6 +912,7 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
             ".venv-build",
             "apps/starbridge-desktop/build",
             "apps/starbridge-desktop/src-tauri/binaries",
+            "apps/starbridge-desktop/scripts/sidecar_launcher.py",
             "apps/starbridge-desktop/scripts/starbridge-sidecar.spec",
         )
         for relative in cases:
@@ -1349,14 +1618,16 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
     @unittest.skipIf(os.name == "nt", "file-backed process capture requires POSIX")
     def test_post_ready_stdout_and_stderr_leaks_fail_closed(self) -> None:
         cases = (
-            ("credential-stdout", "STARBRIDGE_SESSION_TOKEN", "1", False),
-            ("credential-stderr", "STARBRIDGE_SESSION_TOKEN", "2", False),
-            ("path-stdout", "STARBRIDGE_APP_DATA_DIR", "1", False),
-            ("path-stderr", "STARBRIDGE_APP_DATA_DIR", "2", False),
-            ("json-path-stdout", "STARBRIDGE_APP_DATA_DIR", "1", True),
-            ("json-path-stderr", "STARBRIDGE_APP_DATA_DIR", "2", True),
+            ("credential-stdout", "STARBRIDGE_SESSION_TOKEN", "1", "literal"),
+            ("credential-stderr", "STARBRIDGE_SESSION_TOKEN", "2", "literal"),
+            ("path-stdout", "STARBRIDGE_APP_DATA_DIR", "1", "literal"),
+            ("path-stderr", "STARBRIDGE_APP_DATA_DIR", "2", "literal"),
+            ("json-path-stdout", "STARBRIDGE_APP_DATA_DIR", "1", "json"),
+            ("json-path-stderr", "STARBRIDGE_APP_DATA_DIR", "2", "json"),
+            ("form-path-stdout", "STARBRIDGE_APP_DATA_DIR", "1", "form"),
+            ("form-path-stderr", "STARBRIDGE_APP_DATA_DIR", "2", "form"),
         )
-        for stage, variable, descriptor, escape_slashes in cases:
+        for stage, variable, descriptor, encoding in cases:
             with (
                 self.subTest(stage=stage),
                 tempfile.TemporaryDirectory(prefix="KORYAO post-ready leak ") as temporary,
@@ -1367,8 +1638,14 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
                 credential = "post-ready-secret-token"
                 fixture = root / f"{stage}.sh"
                 leak_command = f"printf '%s\\n' \"${variable}\""
-                if escape_slashes:
+                if encoding == "json":
                     leak_command += " | /usr/bin/sed 's#/#\\\\/#g'"
+                elif encoding == "form":
+                    leak_command = (
+                        "/usr/bin/python3 -I -c "
+                        "'import os, urllib.parse; "
+                        f'print(urllib.parse.quote_plus(os.environ["{variable}"], safe=""))\''
+                    )
                 fixture.write_text(
                     "#!/bin/sh\n"
                     "printf 'STARBRIDGE_READY "
@@ -1420,6 +1697,8 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
             leaks = (
                 raw,
                 uri,
+                sidecar_tester.urllib.parse.quote_plus(raw, safe=""),
+                sidecar_tester.urllib.parse.quote_plus(uri, safe=""),
                 fully_encoded_uri,
                 double_encoded_raw,
                 sidecar_tester.PERCENT_ESCAPE_PATTERN.sub(
@@ -1460,7 +1739,10 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
                     sidecar_tester.urllib.parse.quote(near_miss, safe=""),
                     safe="",
                 ),
-                sidecar_tester.urllib.parse.quote_plus(raw, safe=""),
+                raw.replace(" ", "+"),
+                "compiler=C%2B%2B+status",
+                "ratio%2Funit+unchanged",
+                sidecar_tester.urllib.parse.quote_plus(near_miss, safe=""),
             )
             audit = sidecar_tester.OutputAudit()
             audit.register(private_paths=(private_path,))
@@ -1476,6 +1758,95 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
                 len(sidecar_tester._path_text_views(deeply_encoded)),
                 sidecar_tester.MAX_PATH_PERCENT_DECODE_ROUNDS + 1,
             )
+
+    def test_output_audit_form_urlencoded_paths_preserve_real_plus(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="stage4-quote-plus-") as temporary:
+            root = Path(temporary).resolve()
+            path_with_spaces = root / "private app data" / "source proof.png"
+            path_with_pluses = root / "private+app+data" / "source+proof.png"
+            mixed_path = root / "private + app data" / "source+ proof.png"
+
+            mixed_raw = os.fspath(mixed_path)
+            mixed_uri = mixed_path.as_uri()
+            form_raw = sidecar_tester.urllib.parse.quote_plus(mixed_raw, safe="")
+            form_uri = sidecar_tester.urllib.parse.quote_plus(mixed_uri, safe="")
+            form_unquoted_uri = sidecar_tester.urllib.parse.quote_plus(
+                sidecar_tester.urllib.parse.unquote(mixed_uri),
+                safe="",
+            )
+            form_json_slashes = sidecar_tester.urllib.parse.quote_plus(
+                mixed_raw.replace("/", r"\/"),
+                safe="",
+            )
+            double_encoded_form = sidecar_tester.urllib.parse.quote(form_raw, safe="")
+            leaks = (
+                form_raw,
+                form_uri,
+                form_unquoted_uri,
+                form_json_slashes,
+                double_encoded_form,
+                sidecar_tester.PERCENT_ESCAPE_PATTERN.sub(
+                    lambda match: match.group(0).lower(),
+                    form_raw,
+                ),
+            )
+            for leak in leaks:
+                with self.subTest(leak=leak):
+                    audit = sidecar_tester.OutputAudit()
+                    audit.register(private_paths=(mixed_path,))
+                    with self.assertRaises(sidecar_tester.SidecarTestError):
+                        audit.inspect(leak, stage="form-urlencoded fixture")
+                    self.assertTrue(audit.controlled_path_exposed)
+
+            encoded_real_pluses = sidecar_tester.urllib.parse.quote_plus(
+                os.fspath(path_with_pluses),
+                safe="",
+            )
+            self.assertIn("%2B", encoded_real_pluses)
+            plus_audit = sidecar_tester.OutputAudit()
+            plus_audit.register(private_paths=(path_with_pluses,))
+            with self.assertRaises(sidecar_tester.SidecarTestError):
+                plus_audit.inspect(
+                    encoded_real_pluses,
+                    stage="encoded real-plus fixture",
+                )
+
+            space_audit = sidecar_tester.OutputAudit()
+            space_audit.register(private_paths=(path_with_spaces,))
+            space_near_miss = os.fspath(path_with_spaces)
+            space_near_miss = space_near_miss[:-1] + ("x" if space_near_miss[-1] != "x" else "y")
+            harmless_values = (
+                os.fspath(path_with_spaces).replace(" ", "+"),
+                encoded_real_pluses,
+                "form=ordinary+words&language=C%2B%2B",
+                "public=folder%2Fnot-the-private-path+complete",
+                sidecar_tester.urllib.parse.quote_plus(
+                    space_near_miss,
+                    safe="",
+                ),
+                (
+                    os.fspath(path_with_spaces).replace(" ", "+")
+                    + " unrelated=%2Fpublic+encoded+path"
+                ),
+            )
+            for harmless in harmless_values:
+                with self.subTest(harmless=harmless):
+                    space_audit.inspect(harmless, stage="form-urlencoded near miss")
+            self.assertFalse(space_audit.controlled_path_exposed)
+
+            bounded_form = form_raw
+            for _ in range(sidecar_tester.MAX_PATH_PERCENT_DECODE_ROUNDS - 1):
+                bounded_form = sidecar_tester.urllib.parse.quote(bounded_form, safe="")
+            bounded_audit = sidecar_tester.OutputAudit()
+            bounded_audit.register(private_paths=(mixed_path,))
+            with self.assertRaises(sidecar_tester.SidecarTestError):
+                bounded_audit.inspect(bounded_form, stage="bounded form fixture")
+
+            beyond_bound = sidecar_tester.urllib.parse.quote(bounded_form, safe="")
+            beyond_audit = sidecar_tester.OutputAudit()
+            beyond_audit.register(private_paths=(mixed_path,))
+            beyond_audit.inspect(beyond_bound, stage="beyond-bound form fixture")
+            self.assertFalse(beyond_audit.controlled_path_exposed)
 
     def test_every_http_payload_stage_rejects_credentials_and_private_paths(
         self,
@@ -1563,6 +1934,14 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
                 ),
                 sidecar_tester.urllib.parse.quote(
                     raw_private_path,
+                    safe="",
+                ),
+                sidecar_tester.urllib.parse.quote_plus(
+                    raw_private_path,
+                    safe="",
+                ),
+                sidecar_tester.urllib.parse.quote_plus(
+                    private_uri,
                     safe="",
                 ),
                 raw_private_path.replace("/", r"\/"),
@@ -1995,7 +2374,6 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
             with self.subTest(target=target):
                 build = subprocess.run(
                     [
-                        "sh",
                         build_wrapper,
                         "--print-plan",
                         "--target-triple",
@@ -2023,7 +2401,6 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
 
                 test = subprocess.run(
                     [
-                        "sh",
                         test_wrapper,
                         "--print-plan",
                         "--target-triple",
@@ -2061,7 +2438,7 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
         for script, arguments in cases:
             with self.subTest(script=script.name, arguments=arguments):
                 completed = subprocess.run(
-                    ["sh", script, *arguments],
+                    [script, *arguments],
                     check=False,
                     capture_output=True,
                     text=True,
