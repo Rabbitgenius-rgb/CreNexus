@@ -67,7 +67,16 @@ export function DiagnosticsPage({
         <p>会话凭据只保存在 Rust 进程内，不提供给 WebView。写入、导出和运行继续要求明确确认；safe roots 未扩大。</p>
         {status.technicalDetails ? <pre>{status.technicalDetails}</pre> : null}
       </details>
-      <section className="privacy-boundaries"><h3>本机安全边界</h3><ul><li>不上传图片、设计文件或授权文件</li><li>不收集遥测，不运行后台公网服务</li><li>不扫描未授权目录，不记录原始 MachineGuid</li><li>Community 构建不包含生产私钥或私有 Pro 源码</li></ul></section>
+      <section className="privacy-boundaries">
+        <h3>本机安全边界</h3>
+        <ul>
+          <li>不上传图片、设计文件或授权文件</li>
+          <li>默认不发送遥测；匿名指标仅在用户明确启用并确认 consent 后发送</li>
+          <li>匿名指标不包含素材、文件名、本机路径、客户文本或账号信息</li>
+          <li>不运行后台公网服务，不扫描未授权目录，不记录原始 MachineGuid</li>
+          <li>Community 构建不包含生产私钥或私有 Pro 源码</li>
+        </ul>
+      </section>
     </div>
   );
 }

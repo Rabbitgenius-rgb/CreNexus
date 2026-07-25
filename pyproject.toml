@@ -24,6 +24,7 @@ classifiers = [
   "Topic :: Multimedia :: Graphics",
 ]
 dependencies = [
+  "jsonschema>=4.23,<5",
   "tomli>=2; python_version < '3.11'",
 ]
 
@@ -109,7 +110,10 @@ vectorflow-studio = "starbridge_mcp.vectorization.app:main"
 starbridge-image-to-psd = "starbridge_mcp.adapters.photoshop.semantic_layers.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["starbridge_mcp*"]
+include = ["starbridge_mcp*", "model_contracts*"]
+
+[tool.setuptools.package-data]
+model_contracts = ["schemas/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

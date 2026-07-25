@@ -39,6 +39,11 @@ from starbridge_mcp.domain.errors import (
     RecordNotFoundError,
 )
 from starbridge_mcp.mcp_server import SERVER_INFO, handle_request
+from starbridge_mcp.models import (
+    ModelRuntimeClient,
+    ModelRuntimeClientProtocol,
+    ModelRuntimeError,
+)
 from starbridge_mcp.storage import AssetStore, EvidenceStore, JobStore, ProjectStore
 from starbridge_mcp.vectorization.engine import (
     RunConfig,
@@ -77,7 +82,7 @@ SESSION_HEADER = "X-KORYAO-Session"
 READY_PREFIX = "STARBRIDGE_READY "
 MAX_REQUEST_BODY_BYTES = 1024 * 1024
 VECTOR_INPUT_MAX_BYTES = 128 * 1024 * 1024
-VECTOR_MODES = frozenset({"artisan", "smart", "lightweight", "exact"})
+VECTOR_MODES = frozenset({"artisan", "smart", "lightweight", "exact", "editable-99"})
 DEFAULT_DEV_ORIGINS = (
     "http://127.0.0.1:5173",
     "http://localhost:5173",
@@ -205,6 +210,7 @@ class KORYAOBackend:
         mode: str = "development",
         cors_allowed_origins: Iterable[str] | None = None,
         max_request_body_bytes: int = MAX_REQUEST_BODY_BYTES,
+        model_runtime_client: ModelRuntimeClientProtocol | None = None,
     ) -> None:
         if mode not in {"development", "desktop"}:
             raise ValueError("mode must be development or desktop")
@@ -241,6 +247,15 @@ class KORYAOBackend:
             app_paths=self.app_paths,
         )
         self.connections = DesktopConnectionManager(self.app_paths)
+        self._model_runtime_initialization_error: ModelRuntimeError | None = None
+        if model_runtime_client is not None:
+            self.model_runtime = model_runtime_client
+        else:
+            try:
+                self.model_runtime = ModelRuntimeClient.from_environment()
+            except ModelRuntimeError as error:
+                self.model_runtime = None
+                self._model_runtime_initialization_error = error
         self.static_root = static_root or DEFAULT_STATIC_ROOT
         self.history_path = history_path or self.app_paths.history_file
         if cors_allowed_origins is None:
@@ -380,6 +395,36 @@ class KORYAOBackend:
         if not isinstance(payload, dict):
             raise ValueError("request body must be a JSON object")
         return payload
+
+    def _model_runtime_call(
+        self, operation: str, body: Mapping[str, Any] | None = None
+    ) -> BackendResponse:
+        if self.model_runtime is None:
+            error = self._model_runtime_initialization_error
+            return self._error(
+                error.status if error is not None else 503,
+                error.code if error is not None else "model_runtime_unavailable",
+                str(error) if error is not None else "local model runtime is not configured",
+            )
+        try:
+            if operation == "status":
+                result = self.model_runtime.status()
+            else:
+                method = getattr(self.model_runtime, operation)
+                result = method(body or {})
+        except ModelRuntimeError as error:
+            return self._error(error.status, error.code, str(error))
+        if operation != "status":
+            self.record_runtime_event(
+                f"model_{operation}_validated",
+                {
+                    "requestId": result.get("requestId"),
+                    "modelId": result.get("modelId"),
+                    "modelVersion": result.get("modelVersion"),
+                    "workflowId": result.get("workflowId"),
+                },
+            )
+        return BackendResponse(200, {"ok": True, "data": result})
 
     def _static(self, path: str) -> BackendResponse:
         static_root = self.static_root.resolve()
@@ -599,7 +644,7 @@ class KORYAOBackend:
                     reference_id=reference_id,
                     output_dir=str(output_dir),
                     output_root=str(output_root),
-                    colors=optional_int("colors"),
+                    colors=(None if mode in {"exact", "editable-99"} else optional_int("colors")),
                     max_dimension=optional_int("maxDimension"),
                     simplify_ratio=optional_float("simplifyRatio"),
                     min_region_area=optional_int("minRegionArea"),
@@ -608,8 +653,14 @@ class KORYAOBackend:
             )
             result_preview, _, _ = self._image_preview_data_url(output_dir / "preview.png")
             vector = report["vector"]
+            editable_99 = report.get("editable_99")
+            quality_metrics = (
+                editable_99.get("final_metrics", {}) if isinstance(editable_99, dict) else {}
+            )
+            illustrator_safety = report["illustrator_safety"]
             result: JsonObject = {
                 "modeLabel": report["mode"]["label_zh"],
+                "status": (editable_99["status"] if isinstance(editable_99, dict) else "completed"),
                 "sourceHash": str(selection["source_sha256"])[:12],
                 "sourcePreviewDataUrl": selection["preview_data_url"],
                 "resultPreviewDataUrl": result_preview,
@@ -625,6 +676,18 @@ class KORYAOBackend:
                         else None
                     ),
                     "anchorReductionRatio": vector.get("anchor_reduction_ratio"),
+                    "ssim": quality_metrics.get("ssim"),
+                    "differencePercent": quality_metrics.get("difference_percent"),
+                    "normalizedMae": quality_metrics.get("normalized_mae"),
+                    "edgeDice": quality_metrics.get("edge_dice"),
+                    "alphaMae": quality_metrics.get("alpha_mae"),
+                },
+                "illustratorSafety": {
+                    "riskLevel": illustrator_safety["risk_level"],
+                    "action": illustrator_safety["action"],
+                    "autoOpenAllowed": illustrator_safety["auto_open_allowed"],
+                    "message": illustrator_safety["message"],
+                    "thresholdSource": illustrator_safety["threshold_source"],
                 },
                 "warnings": report["warnings"],
                 "outputAvailable": True,
@@ -793,7 +856,13 @@ class KORYAOBackend:
                             "recommended": True,
                             "ordinaryCustomerRoute": True,
                             "requiresConfirmation": True,
-                            "drawingModes": ["artisan", "smart", "lightweight", "exact"],
+                            "drawingModes": [
+                                "artisan",
+                                "smart",
+                                "lightweight",
+                                "exact",
+                                "editable-99",
+                            ],
                             "imageTraceFallback": False,
                         },
                         {
@@ -1316,6 +1385,16 @@ class KORYAOBackend:
 
         if method == "GET" and path == "/api/connections":
             return BackendResponse(200, {"ok": True, "data": self.connections.overview()})
+
+        if method == "GET" and path == "/api/model/status":
+            return self._model_runtime_call("status")
+
+        if method == "POST" and path in {
+            "/api/model/plan",
+            "/api/model/evaluate",
+            "/api/model/repair",
+        }:
+            return self._model_runtime_call(path.rsplit("/", 1)[-1], body)
 
         if method == "POST" and path == "/api/connections/codex/install":
             if self.mode != "desktop":

@@ -44,11 +44,21 @@
     "placeholderLetterIconReplaced": true
   },
   "sourceBoundary": {
-    "communityRepository": "jianbaorui07-dot/KORYAO",
-    "communitySource": "public-mit",
+    "communityRepository": "jianbaorui07-dot/KORYAO-basic",
+    "communitySource": "public-proprietary-current",
+    "currentLicense": "KORYAO Proprietary License",
+    "historicalLicenseRightsPreserved": true,
     "commercialSource": "private-planned",
     "suggestedCommercialRepository": "KORYAO-Pro",
     "commercialRepositoryCreated": false,
+    "suggestedModelRuntimeRepository": "KORYAO-Model-Private",
+    "modelRuntimeRepository": "jianbaorui07-dot/KORYAO-Model-Private",
+    "modelRuntimeRepositoryCreated": true,
+    "modelRuntimeRepositoryVisibility": "private",
+    "suggestedModelDataRepository": "KORYAO-Data-Private",
+    "modelDataRepository": "jianbaorui07-dot/KORYAO-Data-Private",
+    "modelDataRepositoryCreated": true,
+    "modelDataRepositoryVisibility": "private",
     "premiumImplementationsAllowedInCommunityRepository": false,
     "communityBuildContainsPrivateProSource": false
   },
@@ -61,7 +71,7 @@
       "licenseTerm": "free",
       "activationRequired": false,
       "deviceLimit": null,
-      "sourceVisibility": "public-mit"
+      "sourceVisibility": "public-proprietary-current"
     },
     {
       "id": "pro",
@@ -169,6 +179,30 @@
       "requiresUserConfirmation": true,
       "requiresThirdPartySoftware": false,
       "documentation": "docs/ARCHITECTURE_V2.md"
+    },
+    {
+      "id": "model.contract_v1",
+      "publicName": "闭源模型公共协议 v1",
+      "edition": "community",
+      "capabilityStatus": "experimental",
+      "evidenceLevel": "integration",
+      "recommended": true,
+      "deprecated": false,
+      "requiresUserConfirmation": true,
+      "requiresThirdPartySoftware": false,
+      "documentation": "docs/CLOSED_MODEL_ARCHITECTURE.md"
+    },
+    {
+      "id": "model.local_runtime_client_v1",
+      "publicName": "闭源模型本机运行端连接",
+      "edition": "community",
+      "capabilityStatus": "experimental",
+      "evidenceLevel": "integration",
+      "recommended": true,
+      "deprecated": false,
+      "requiresUserConfirmation": true,
+      "requiresThirdPartySoftware": true,
+      "documentation": "docs/CLOSED_MODEL_ARCHITECTURE.md"
     },
     {
       "id": "workflow.vector_delivery_v1",
@@ -335,6 +369,8 @@
     "userImages": "local-only",
     "designFiles": "local-only",
     "licenseFiles": "local-only",
+    "modelRequests": "loopback-structured-metadata-only",
+    "cloudModel": "not_implemented-explicit-opt-in-required",
     "telemetry": "disabled",
     "backgroundNetworkService": false,
     "loopbackOnly": true,

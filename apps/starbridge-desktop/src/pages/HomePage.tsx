@@ -22,6 +22,8 @@ import type {
 interface HomePageProps {
   status: RuntimeStatus;
   connections: ConnectionOverview | null;
+  connectionsLoading: boolean;
+  connectionsError: string;
   recentTasks: CreativeJob[];
   license: LicenseStatus;
   version: VersionInfo | null;
@@ -57,13 +59,38 @@ function formatUpdatedAt(value: string) {
   }).format(date);
 }
 
-export function HomePage({ status, connections, recentTasks, license, version, onNavigate }: HomePageProps) {
+export function HomePage({
+  status,
+  connections,
+  connectionsLoading,
+  connectionsError,
+  recentTasks,
+  license,
+  version,
+  onNavigate,
+}: HomePageProps) {
   const runtimeReady = status.state === "connected";
   const drawingReady = runtimeReady && connections?.drawing_enabled === true;
-  const applications = connections?.applications.slice(0, 3) ?? [];
+  const allApplications = connections?.applications ?? [];
+  const applications = allApplications.slice(0, 3);
   const tasks = recentTasks.slice(0, 5);
-  const pairedApplications = applications.filter((application) => application.paired || application.bridge_available).length;
+  const pairedApplications = allApplications.filter(
+    (application) => application.paired || application.bridge_available,
+  ).length;
   const startLabel = drawingReady ? "新建或打开项目" : "连接 Codex 后开始制图";
+  const startHint = drawingReady
+    ? "可审计 · 可追溯"
+    : runtimeReady
+      ? "前往连接中心完成关联"
+      : "等待本地服务就绪";
+  const bridgeErrorVisible = applications.length === 0 && Boolean(connectionsError);
+  const bridgeLoadingVisible = applications.length === 0
+    && !bridgeErrorVisible
+    && (connectionsLoading || connections === null);
+  const bridgeEmptyVisible = applications.length === 0
+    && !bridgeErrorVisible
+    && !bridgeLoadingVisible
+    && connections !== null;
 
   return (
     <div className="home-page editorial-home">
@@ -81,7 +108,7 @@ export function HomePage({ status, connections, recentTasks, license, version, o
           >
             <IconPlayerPlay aria-hidden="true" />
             <strong>开始项目</strong>
-            <span>新建或打开项目<small>可审计 · 可追溯</small></span>
+            <span>{startLabel}<small>{startHint}</small></span>
             <IconArrowRight aria-hidden="true" />
           </button>
           {!runtimeReady ? <p className="inline-guidance">本地服务就绪后即可开始；可前往“设置与诊断”重新启动。</p> : !drawingReady ? <p className="inline-guidance">本地服务已就绪；请在连接中心关联当前 Codex 会话。</p> : null}
@@ -105,20 +132,26 @@ export function HomePage({ status, connections, recentTasks, license, version, o
             </div>
             <div className="data-boundary-block">
               <IconShieldCheck aria-hidden="true" />
-              <div><strong>数据边界</strong><span>所有文件与处理均在本机完成，不会上传任何内容</span></div>
+              <div>
+                <strong>数据边界</strong>
+                <span>素材与设计文件仅在本机处理；可选匿名指标必须由用户明确启用，且不包含素材、文件名或本机路径。</span>
+              </div>
             </div>
           </div>
           <footer>
             <div><span>COMMUNITY 版本</span><strong>{license.edition === "community" ? "Community" : license.edition.toUpperCase()}</strong></div>
             <div><span>版本号</span><strong>v{version?.desktop ?? "—"}</strong></div>
-            <div><span>环境标识</span><strong>SB-LOCAL</strong></div>
+            <div><span>环境标识</span><strong>KORYAO-LOCAL</strong></div>
           </footer>
         </aside>
       </section>
 
       <section className="privacy-strip">
         <IconShieldCheck aria-hidden="true" />
-        <div><strong>素材和设计文件不会上传</strong><span>所有处理仅在本机完成，确保隐私与数据安全可控。</span></div>
+        <div>
+          <strong>素材和设计文件不上传</strong>
+          <span>核心处理仅在本机完成；可选匿名指标需要用户主动启用，并且不包含素材、文件名或本机路径。</span>
+        </div>
         <p>LOCAL-FIRST<br />PRIVATE BY DESIGN</p>
       </section>
 
@@ -140,10 +173,24 @@ export function HomePage({ status, connections, recentTasks, license, version, o
               <button type="button" onClick={() => onNavigate("integrations")}>打开 {application.mark}<IconArrowRight aria-hidden="true" /></button>
             </article>
           ))}
-          {!applications.length ? (
-            <article className="bridge-card bridge-loading">
+          {bridgeLoadingVisible ? (
+            <article className="bridge-card bridge-loading" aria-live="polite">
               <span className="bridge-mark">…</span>
               <div className="bridge-summary"><div><strong>正在检测本机软件桥</strong><em>● 检测中</em></div><p>只读取固定安装、进程和回环接口线索。</p></div>
+            </article>
+          ) : null}
+          {bridgeErrorVisible ? (
+            <article className="bridge-card bridge-loading" role="alert">
+              <span className="bridge-mark">!</span>
+              <div className="bridge-summary"><div><strong>软件桥状态读取失败</strong><em className="application-unavailable">● 需要重试</em></div><p>{connectionsError}</p></div>
+              <button type="button" onClick={() => onNavigate("integrations")}>打开连接中心<IconArrowRight aria-hidden="true" /></button>
+            </article>
+          ) : null}
+          {bridgeEmptyVisible ? (
+            <article className="bridge-card bridge-loading">
+              <span className="bridge-mark">0</span>
+              <div className="bridge-summary"><div><strong>尚未检测到可用软件桥</strong><em>● 待配置</em></div><p>前往连接中心检查安装状态、进程和本机桥接配置。</p></div>
+              <button type="button" onClick={() => onNavigate("integrations")}>打开连接中心<IconArrowRight aria-hidden="true" /></button>
             </article>
           ) : null}
         </div>

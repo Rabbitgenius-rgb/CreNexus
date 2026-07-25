@@ -6,53 +6,102 @@ export const navigation = [
 
 export const pages = {
   "/": {
-    eyebrow: "Windows AI 创意软件协同平台",
-    title: "让创意软件协同工作，而不是反复切换。",
-    intro: "构曜纪基础版｜KORYAO基础版把图片矢量化、批量任务和创意软件联动集中在一个应用中。你的图片和设计文件始终留在自己的电脑里。",
-    actions: [["/editions", "查看 Community 免费版"], ["/features", "了解 Pro 专业版"]],
-    sections: [["先完成作品，再处理工具切换", "从图片导入、模式选择、本地执行到结果预览和任务记录，Community 工作流集中在一个桌面应用中。"], ["本机处理是产品边界", "不上传图片、设计文件或授权文件，不收集遥测，也不依赖构曜纪基础版｜KORYAO基础版授权服务器。"], ["能力状态说清楚", "已经交付的基础能力继续属于 Community；批量、项目管理和新的私有增强仍处于专业版规划阶段。"]]
+    eyebrow: "本地 AI 创意工作台",
+    title: "把创意任务做成一条可验证的本地工作流。",
+    intro: "KORYAO Basic（构曜纪基础版）把 Codex 调度、图片矢量化、质量核对、任务记录和创意软件交付集中到一个 Windows 优先的桌面应用中。素材默认留在本机，真实写入必须确认。",
+    actions: [["/features", "查看当前能力"], ["/editions", "了解版本边界"]],
+    sections: [
+      ["从目标到交付", "选择项目和素材后，可以通过 Codex 对话或页面操作完成执行、核对、预览、导出和证据记录。"],
+      ["本机处理是默认边界", "KORYAO 不要求把客户图片、设计文件或授权信息上传到 KORYAO 服务器；可选匿名指标必须由用户明确启用。"],
+      ["只承诺有证据的能力", "稳定、实验、规划和未支持状态分别标注，不把按钮、协议或测试样例包装成完整商业交付。"]
+    ]
   },
   "/features": {
-    eyebrow: "功能", title: "为真实创作流程组织功能。",
-    intro: "页面只陈述已有证据或明确的规划状态，不把按钮、schema 或测试替代为商业交付。",
-    sections: [["Community 图片矢量化", "匠心矢量、智能矢量、轻量矢量和精确重建均可在本机执行。"], ["创意软件联动", "仓库已有 Illustrator、Photoshop、ComfyUI、Blender 与 CAD 的实现或协议；具体桌面验收状态以文档和 Manifest 为准。"], ["生产级矢量工作流 · 规划中", "未来 Pro 的价值来自批量队列、文件夹处理、项目历史、任务恢复、商业交付、新私有增强和专业支持。"]]
+    eyebrow: "功能与证据",
+    title: "围绕真实创作流程组织能力。",
+    intro: "当前重点是图片矢量化、本地安全调度和可追溯交付；第三方软件桥接按实际验收状态开放。",
+    sections: [
+      ["五种矢量化模式", "像素重建、Editable-99、匠心矢量、智能矢量和轻量矢量分别面向忠实复刻、高保真编辑、插画、通用素材与轻量图形。"],
+      ["Codex + MCP 本地调度", "Codex 负责理解目标和选择工具，本地运行时负责路径限制、确认、执行、验证和脱敏记录。"],
+      ["创意软件交付", "Illustrator、Photoshop、ComfyUI、Blender 与 CAD 已有不同程度的实现、探针或协议；具体状态以产品事实和 CI 证据为准。"],
+      ["KORYAO-C1 本地模型运行端", "通过 loopback 接收结构化任务元数据，用于计划、评估和修复建议，不直接读取磁盘或绕过写入确认。"]
+    ]
   },
   "/editions": {
-    eyebrow: "版本对比", title: "免费能力直接使用，专业能力按证据开放。",
-    intro: "Community 无需激活。Pro 早鸟永久版建议 ¥399，但尚未开售；Enterprise 按项目报价。",
-    sections: [["Community · ¥0", "本地桌面运行、四种公开矢量模式与开放核心能力；无需登录、联网或授权文件。"], ["Pro · 建议 ¥399", "生产级矢量工作流仍在规划；价格、设备数量、更新和支持条款尚待产品所有者决定。"], ["Enterprise · 按项目报价", "企业部署、交付支持和定制代码必须通过单独合同确认；当前未开放销售。"]]
+    eyebrow: "版本对比",
+    title: "基础能力直接使用，专业能力按验收开放。",
+    intro: "Community 无需激活。Pro 早鸟永久版建议价为 ¥399，但当前尚未正式开售；Enterprise 需要按项目确认范围和报价。",
+    sections: [
+      ["Community · ¥0", "本地核心运行、五种公开矢量模式、基础任务记录与安全能力；无需登录或连接授权服务器。"],
+      ["Pro · 建议 ¥399", "批量队列、项目历史、任务恢复、私有增强与专业支持仍在规划和验收中，具体价格与条款尚未生效。"],
+      ["Enterprise · 按项目报价", "企业部署、定制 Adapter、交付支持和私有代码必须通过单独合同明确范围、安全边界与验收证据。"]
+    ]
   },
   "/workflows": {
-    eyebrow: "工作流案例", title: "从一张图片开始，在本机完成交付。",
-    intro: "Community 主流程：导入图片 → 选择模式 → 确认参数与写入 → 本地执行 → 预览与质量指标 → 打开输出目录 → 保存任务记录。",
-    sections: [["图标与 Logo", "轻量矢量强调更少的颜色、节点和文件体积。"], ["插画与品牌图形", "匠心矢量和智能矢量保留编辑性，并通过明确的质量门控拒绝不合格结果。"], ["像素级存档", "精确重建不缩放、不量化颜色，适用于需要逐像素核对的本地任务。"]]
+    eyebrow: "工作流案例",
+    title: "从一张图片开始，在本机完成可交付结果。",
+    intro: "主流程：选择项目与图片 → 选择模式 → 确认参数 → 本地执行 → 查看质量指标 → 预览结果 → 打开输出目录或导出 AI / PSD。",
+    sections: [
+      ["像素级忠实复刻", "像素重建把工作分辨率中的 RGBA 像素转为真实 SVG 几何，并回渲染逐像素核对。"],
+      ["高保真继续编辑", "Editable-99 只有在五项质量门槛全部通过后，才会从合格候选中选择复杂度更低的结果。"],
+      ["插画、Logo 与纹样", "匠心、智能和轻量模式在编辑性、相似度、节点数量和文件体积之间提供不同取向。"],
+      ["Adobe 文件交付", "Windows 上可在明确确认后调用 Illustrator 或 Photoshop，验证结果后写入用户选择的新路径，已有文件不会被覆盖。"]
+    ]
   },
   "/privacy": {
-    eyebrow: "本地处理与隐私", title: "你的素材不需要离开电脑。",
-    intro: "核心运算只在本机执行，应用只绑定 loopback，不扫描未授权目录，也不收集遥测。",
-    sections: [["素材", "图片和设计文件不上传到构曜纪基础版｜KORYAO基础版服务器。"], ["授权", "Community 无需授权；未来 Pro 使用人工交付的离线签名文件，不上传授权文件。"], ["软件更新", "正式签名构建只向 GitHub Releases 请求版本信息；可关闭定时检查，下载和安装始终需要确认。"], ["写入", "运行、导出和写入继续要求显式确认，并受安全目录限制。"]]
+    eyebrow: "本地处理与安全",
+    title: "素材留在电脑里，写入保持可控。",
+    intro: "核心服务默认只绑定 loopback，不递归扫描未授权目录，也不会默认发送遥测。只有用户明确启用匿名指标并确认 consent 后，才会发送不含素材、文件名、路径或客户文本的受限统计。",
+    sections: [
+      ["素材", "图片、设计文件和客户项目不需要上传到 KORYAO 服务器。"],
+      ["日志", "证据记录使用哈希、相对引用和状态，不保存 Token、Cookie、OAuth、完整指令或真实绝对路径。"],
+      ["匿名指标", "仅在用户明确启用 feedback.github_metrics_upload 并确认 starbridge.github_metrics.v1 consent 后发送；关闭开关不会影响本地交付。"],
+      ["本地模型", "KORYAO-C1 只接收经过 schema 校验的任务元数据、素材 ID 和 Adapter 白名单，不直接访问磁盘。"],
+      ["软件更新", "正式构建只应请求版本信息；下载、安装和真实写入始终需要用户确认。"]
+    ]
   },
   "/docs": {
-    eyebrow: "文档", title: "从产品事实到开发边界。",
-    intro: "仓库文档记录功能证据、许可证与商业边界、离线授权、私有 Pro 架构和 Windows 发布门槛。",
+    eyebrow: "文档与事实源",
+    title: "从产品承诺到技术边界都有记录。",
+    intro: "仓库文档覆盖产品事实、架构、矢量化质量门槛、Adobe 交付、安全模型、本地模型协议和 Windows 发布门槛。",
     actions: [["https://github.com/jianbaorui07-dot/KORYAO-basic/tree/main/docs", "打开 GitHub 文档"]],
-    sections: [["产品 Manifest", "机器可读事实源区分可用、实验、规划和未支持状态。"], ["商业边界审计", "当前版本使用自有许可证；历史版本仍适用其发布时随附的许可证。"], ["发布准备", "签名、干净机器、Defender、SmartScreen 和正式条款全部设为收费门槛。"]]
+    sections: [
+      ["产品事实", "机器可读 Manifest 区分可用、实验、规划和未支持状态。"],
+      ["质量与验证", "每种矢量模式拥有明确边界，像素重建和 Editable-99 不会静默降低门槛。"],
+      ["发布准备", "代码签名、干净机器、网络请求、升级回滚、Defender 与 SmartScreen 都属于正式发布前置条件。"]
+    ]
   },
   "/download": {
-    eyebrow: "下载", title: "Windows 内部预览版可以直接下载。",
-    intro: "构曜纪基础版｜KORYAO基础版 Community 0.1.0 未签名内部预览版已通过 GitHub prerelease 提供给团队测试。无需 Git、Python 或 Node.js；由于尚未完成 Authenticode，Windows 可能显示“未知发布者”。",
-    actions: [["https://github.com/jianbaorui07-dot/KORYAO-basic/releases/download/starbridge-preview-v0.1.0-unsigned.1/StarBridge-Desktop_0.1.0_x64-setup-UNSIGNED-PREVIEW.exe", "下载更名前兼容预览版"], ["https://github.com/jianbaorui07-dot/KORYAO-basic/releases/tag/starbridge-preview-v0.1.0-unsigned.1", "查看 GitHub 上传记录"]],
-    sections: [["当前状态", "GitHub 公开资产可直接下载；公网重新下载后的文件已在本机完成安装、启动和 Defender 自定义扫描，检出 0。"], ["文件校验", "SHA-256：CB163DCB77CE79CDA2E815B8B8FF16760FAFCC81F0465D342B37AE1E71BB146D。"], ["版本边界", "这是团队内部预览版，不是 Authenticode 签名稳定版，也不是收费 Release。"], ["正式开放条件", "仍需完成受信任代码签名、干净 Windows、SmartScreen、升级回滚和正式条款验收。"]]
+    eyebrow: "内部预览",
+    title: "Windows 未签名预览版仅用于测试。",
+    intro: "当前 GitHub prerelease 提供的是更名前兼容的内部预览构建。它不是正式稳定版，也未完成 Authenticode 代码签名，因此 Windows 可能显示“未知发布者”。",
+    actions: [["https://github.com/jianbaorui07-dot/KORYAO-basic/releases/download/starbridge-preview-v0.1.0-unsigned.1/StarBridge-Desktop_0.1.0_x64-setup-UNSIGNED-PREVIEW.exe", "下载兼容预览版"], ["https://github.com/jianbaorui07-dot/KORYAO-basic/releases/tag/starbridge-preview-v0.1.0-unsigned.1", "查看发布记录"]],
+    sections: [
+      ["使用范围", "仅用于团队测试和兼容性验证，不作为正式商业交付。"],
+      ["文件校验", "SHA-256：CB163DCB77CE79CDA2E815B8B8FF16760FAFCC81F0465D342B37AE1E71BB146D。"],
+      ["已知边界", "仍需完成受信任代码签名、干净 Windows、SmartScreen、升级回滚和正式条款验收。"]
+    ]
   },
   "/roadmap": {
-    eyebrow: "路线图", title: "先把证据做实，再扩大承诺。",
-    intro: "路线图按可验证里程碑推进，不把规划中的 Pro 或软件联动写成已交付。",
-    sections: [["现在", "品牌系统、桌面 Shell、真实 Community 矢量化流程和离线授权体验。"], ["下一门槛", "私有 Pro 仓库与至少一个真实端到端商业 MVP。"], ["发布前", "代码签名、干净机器、网络请求、升级回滚、Defender 与 SmartScreen 验收。"]]
+    eyebrow: "路线图",
+    title: "先完成验收，再扩大承诺。",
+    intro: "路线图以可复现证据为准，优先解决安装、兼容、恢复和交付问题。",
+    sections: [
+      ["Windows 正式发布", "完成签名安装包、SmartScreen、干净机器、升级回滚与更新签名。"],
+      ["Adobe 兼容矩阵", "扩大 Photoshop / Illustrator 多版本、多语言、异常恢复和客户机器验收。"],
+      ["创意软件闭环", "将 ComfyUI、Blender、AutoCAD 和剪映从探针、dry-run 或实验实现推进到可复现流程。"],
+      ["本地模型运行端", "完善协议版本、失败降级、可观测性与桌面端状态说明。"]
+    ]
   },
   "/support": {
-    eyebrow: "支持与购买说明", title: "购买尚未开放，问题可以先从文档开始。",
-    intro: "Pro 价格和条款仍是建议状态；没有立即购买入口，也没有授权服务器。",
-    actions: [["https://github.com/jianbaorui07-dot/KORYAO-basic/issues", "查看公开问题"]],
-    sections: [["Community", "公开问题区用于可复现的 Community 缺陷和文档问题，请勿上传客户素材或授权文件。"], ["Pro", "专业支持渠道、期限和响应承诺尚待产品所有者决定。"], ["Enterprise", "企业部署和定制必须单独确认范围、安全边界、交付证据和合同。"]]
+    eyebrow: "支持与合作",
+    title: "公开问题可复现，商业范围单独确认。",
+    intro: "当前购买入口尚未开放。Community 缺陷和文档问题可通过 GitHub Issue 反馈，联合开发与商业合作可通过邮件联系。",
+    actions: [["https://github.com/jianbaorui07-dot/KORYAO-basic/issues", "提交或查看问题"]],
+    sections: [
+      ["Community", "请提供可复现步骤、系统版本和脱敏日志，不要上传客户素材、Token、授权文件或真实路径。"],
+      ["联合开发", "欢迎开发者、设计师、测试人员和创意软件专家参与功能、验收和文档建设。"],
+      ["商业合作", "企业部署、定制 Adapter、交付支持与授权条款需要单独确认；联系 jianbaorui07@gmail.com。"]
+    ]
   }
 };

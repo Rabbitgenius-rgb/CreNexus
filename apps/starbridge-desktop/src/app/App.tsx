@@ -10,6 +10,7 @@ import { HomePage } from "../pages/HomePage";
 import { IntegrationsPage } from "../pages/IntegrationsPage";
 import { JobDetailPage } from "../pages/JobDetailPage";
 import { LicensePage } from "../pages/LicensePage";
+import { ModelRuntimePage } from "../pages/ModelRuntimePage";
 import { PhotoshopProductionPage } from "../pages/PhotoshopProductionPage";
 import { ProjectsPage } from "../pages/ProjectsPage";
 import { TasksPage } from "../pages/TasksPage";
@@ -266,7 +267,7 @@ export function App({ client: providedClient }: AppProps) {
     };
     switch (page) {
       case "home":
-        return <HomePage status={status} connections={connections} recentTasks={tasks} license={license} version={version} onNavigate={setPage} />;
+        return <HomePage status={status} connections={connections} connectionsLoading={connectionsLoading} connectionsError={connectionsError} recentTasks={tasks} license={license} version={version} onNavigate={setPage} />;
       case "codex-conversation":
         return <CodexConversationPage client={client} connections={connections} runtimeReady={status.state === "connected"} onOpenConnections={() => setPage("integrations")} />;
       case "projects":
@@ -305,6 +306,8 @@ export function App({ client: providedClient }: AppProps) {
           onRefresh={refreshConnections}
           onRestartBridge={restart}
         />;
+      case "models":
+        return <ModelRuntimePage client={client} runtimeReady={status.state === "connected"} />;
       case "tasks":
         return <TasksPage tasks={tasks} onStart={() => openWorkflow()} onOpenJob={openJob} />;
       case "job-detail":

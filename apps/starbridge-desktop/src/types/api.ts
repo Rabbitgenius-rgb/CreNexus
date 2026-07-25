@@ -85,6 +85,36 @@ export interface ConnectionOverview {
   };
 }
 
+export type ModelRuntimeHealth = "healthy" | "degraded" | "unavailable";
+export type ModelAvailability = "experimental" | "ready" | "disabled" | "unavailable";
+
+export interface ModelRuntimeModel {
+  modelId: string;
+  version: string;
+  providerId: string;
+  status: ModelAvailability;
+  capabilities: Array<"plan" | "evaluate" | "repair">;
+}
+
+export interface ModelRuntimeStatus {
+  schema: "koryao-model-contract/v1";
+  serviceId: string;
+  serviceVersion: string;
+  status: ModelRuntimeHealth;
+  runtimeMode: "local";
+  supportedContracts: string[];
+  network: {
+    bindAddress: "127.0.0.1" | "::1";
+    externalNetworkAccess: false;
+  };
+  privacy: {
+    acceptsRawAssets: false;
+    logsAbsolutePaths: false;
+    logsFullInstructions: false;
+  };
+  models: ModelRuntimeModel[];
+}
+
 export interface CodexConnectorInstallResult {
   installed: boolean;
   connector: string;
@@ -150,8 +180,15 @@ export interface LicenseRequestReceipt {
   folderOpened: boolean;
 }
 
-export type VectorMode = "artisan" | "smart" | "lightweight" | "exact";
+export type VectorMode = "artisan" | "smart" | "lightweight" | "exact" | "editable-99";
 export type VectorJobState = "queued" | "running" | "completed" | "failed";
+export type Editable99Status =
+  | "passed_editable_99"
+  | "passed_quality_high_complexity"
+  | "quality_not_met"
+  | "quality_and_editability_conflict"
+  | "resource_limit_exceeded"
+  | "execution_failed";
 
 export interface VectorSelection {
   selectionId: string;
@@ -170,14 +207,27 @@ export interface VectorMetrics {
   elapsedSeconds: number;
   pixelMatch?: boolean | null;
   anchorReductionRatio?: number | null;
+  ssim?: number | null;
+  differencePercent?: number | null;
+  normalizedMae?: number | null;
+  edgeDice?: number | null;
+  alphaMae?: number | null;
 }
 
 export interface VectorJobResult {
   modeLabel: string;
+  status: Editable99Status | "completed";
   sourceHash: string;
   sourcePreviewDataUrl: string;
   resultPreviewDataUrl: string;
   metrics: VectorMetrics;
+  illustratorSafety: {
+    riskLevel: "safe" | "warning" | "blocked" | "archive";
+    action: string;
+    autoOpenAllowed: boolean;
+    message: string;
+    thresholdSource: string;
+  };
   warnings: string[];
   outputAvailable: boolean;
 }
@@ -291,7 +341,7 @@ export interface CreativeJobCreateRequest {
   projectId: string;
   workflowId: string;
   sourceAssetId?: string;
-  drawingMode?: "artisan" | "smart" | "lightweight" | "exact";
+  drawingMode?: VectorMode;
   parameters?: Record<string, unknown>;
   prompt?: string;
   negativePrompt?: string;
@@ -337,7 +387,7 @@ export interface WorkflowSummary {
   recommended: boolean;
   ordinaryCustomerRoute: boolean;
   requiresConfirmation: boolean;
-  drawingModes: Array<"artisan" | "smart" | "lightweight" | "exact">;
+  drawingModes: VectorMode[];
   imageTraceFallback: boolean;
 }
 
