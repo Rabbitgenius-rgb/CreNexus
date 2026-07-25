@@ -57,8 +57,10 @@ class Vector60RuntimePackagingTest(unittest.TestCase):
         requirements = (scripts / "requirements-sidecar-build.txt").read_text(encoding="utf-8")
         spec = (scripts / "starbridge-sidecar.spec").read_text(encoding="utf-8")
         build = (scripts / "Build-Sidecar.ps1").read_text(encoding="utf-8")
+        darwin_build = (scripts / "sidecar_builder.py").read_text(encoding="utf-8")
         sidecar_entry = (scripts / "sidecar_entry.py").read_text(encoding="utf-8")
         sidecar_test = (scripts / "Test-Sidecar.ps1").read_text(encoding="utf-8")
+        darwin_test = (scripts / "sidecar_tester.py").read_text(encoding="utf-8")
 
         for name, version in PYTHON_RUNTIME_VERSIONS.items():
             self.assertIn(f"{name}=={version}", requirements)
@@ -70,7 +72,11 @@ class Vector60RuntimePackagingTest(unittest.TestCase):
         self.assertIn("--vector60-runtime-check", sidecar_entry)
         self.assertIn("--vector60-runtime-check", build)
         self.assertIn("--vector60-runtime-check", sidecar_test)
+        self.assertIn("--vector60-runtime-check", darwin_build)
+        self.assertIn("vector60_svgo_runtime_included", darwin_build)
+        self.assertIn("vector60_svgo_runtime_included", darwin_test)
         self.assertNotRegex(build.lower(), r"\bnpx\b")
+        self.assertNotRegex(darwin_build.lower(), r"\bnpx\b")
 
     def test_ci_runs_real_cross_platform_runtime_smoke(self) -> None:
         workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")

@@ -9,7 +9,7 @@
     "preview": "vite preview --host 127.0.0.1",
     "test": "vitest run && npm run test:tauri-config",
     "test:watch": "vitest",
-    "test:tauri-config": "node --test scripts/check-tauri-config.node-tests.mjs && node scripts/check-tauri-config.mjs",
+    "test:tauri-config": "node --test scripts/check-tauri-config.node-tests.mjs && node scripts/check-tauri-config.mjs --platform windows --platform macos",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build --no-bundle",

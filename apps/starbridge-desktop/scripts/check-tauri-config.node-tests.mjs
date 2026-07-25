@@ -34,6 +34,12 @@ const WINDOWS_PATCH = JSON.parse(
     "utf8",
   ),
 );
+const MACOS_PATCH = JSON.parse(
+  fs.readFileSync(
+    path.join(DESKTOP_DIR, "src-tauri/tauri.macos.conf.json"),
+    "utf8",
+  ),
+);
 const temporaryDirectories = [];
 
 after(() => {
@@ -55,6 +61,7 @@ const temporaryDirectory = () => {
 const writeCheckerFixture = ({
   base = BASE_CONFIG,
   patch = WINDOWS_PATCH,
+  platform = "windows",
   schema = JSON.parse(fs.readFileSync(TAURI_SCHEMA, "utf8")),
   writePatch = true,
 } = {}) => {
@@ -62,7 +69,7 @@ const writeCheckerFixture = ({
   fs.writeFileSync(path.join(directory, "tauri.conf.json"), JSON.stringify(base));
   if (writePatch) {
     fs.writeFileSync(
-      path.join(directory, "tauri.windows.conf.json"),
+      path.join(directory, `tauri.${platform}.conf.json`),
       JSON.stringify(patch),
     );
   }
@@ -125,10 +132,16 @@ const runTauriBuildParser = (configText) => {
   );
 };
 
-const assertCheckerAndTauri = ({ base, expectedStatus, label }) => {
-  const fixture = writeCheckerFixture({ base });
-  const checker = runChecker(fixture);
-  const tauri = runTauriParser(mergePatch(base, WINDOWS_PATCH));
+const assertCheckerAndTauri = ({
+  base,
+  expectedStatus,
+  label,
+  patch = WINDOWS_PATCH,
+  platform = "windows",
+}) => {
+  const fixture = writeCheckerFixture({ base, patch, platform });
+  const checker = runChecker(fixture, platform);
+  const tauri = runTauriParser(mergePatch(base, patch));
   assert.equal(
     checker.status,
     expectedStatus,
@@ -147,6 +160,20 @@ test("valid base and Windows merge agree with the installed Tauri CLI", () => {
     base: clone(BASE_CONFIG),
     expectedStatus: 0,
     label: "valid configuration",
+  });
+});
+
+test("disabled macOS sidecar overlay agrees with the installed Tauri CLI", () => {
+  const merged = mergePatch(clone(BASE_CONFIG), MACOS_PATCH);
+  assert.equal(merged.bundle.active, false);
+  assert.equal(Object.hasOwn(merged.bundle, "externalBin"), false);
+  assert.equal(Object.hasOwn(merged.bundle, "resources"), false);
+  assertCheckerAndTauri({
+    base: clone(BASE_CONFIG),
+    expectedStatus: 0,
+    label: "disabled macOS sidecar configuration",
+    patch: MACOS_PATCH,
+    platform: "macos",
   });
 });
 
