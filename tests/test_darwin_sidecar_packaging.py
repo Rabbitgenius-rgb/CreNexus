@@ -1506,9 +1506,7 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
                     return subprocess.CompletedProcess(command, 0, stdout, "")
 
                 with (
-                    self.allow_windows_darwin_executable_fixture(
-                        layout.staged_executable
-                    ),
+                    self.allow_windows_darwin_executable_fixture(layout.staged_executable),
                     mock.patch.object(
                         sidecar_builder,
                         "_required_tool",
@@ -1590,9 +1588,7 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
                     return subprocess.CompletedProcess(command, 0, stdout, "")
 
                 with (
-                    self.allow_windows_darwin_executable_fixture(
-                        layout.staged_executable
-                    ),
+                    self.allow_windows_darwin_executable_fixture(layout.staged_executable),
                     mock.patch.object(
                         sidecar_builder,
                         "_required_tool",
@@ -1647,9 +1643,7 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
                 return subprocess.CompletedProcess(command, 0, stdout, "")
 
             with (
-                self.allow_windows_darwin_executable_fixture(
-                    layout.staged_executable
-                ),
+                self.allow_windows_darwin_executable_fixture(layout.staged_executable),
                 mock.patch.object(
                     sidecar_builder,
                     "_required_tool",
@@ -1900,11 +1894,7 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
         for raw in raw_paths:
             encoded = sidecar_tester.urllib.parse.quote_plus(raw, safe="")
             double_encoded = sidecar_tester.urllib.parse.quote(encoded, safe="")
-            encoded_drive = (
-                "%43" + encoded[1:]
-                if raw.startswith("C:")
-                else encoded
-            )
+            encoded_drive = "%43" + encoded[1:] if raw.startswith("C:") else encoded
             lowercase_encoded = sidecar_tester.PERCENT_ESCAPE_PATTERN.sub(
                 lambda match: match.group(0).lower(),
                 encoded,
