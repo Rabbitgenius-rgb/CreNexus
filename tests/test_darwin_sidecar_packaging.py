@@ -1932,6 +1932,20 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
             sidecar_tester._path_text_views(harmless),
         )
 
+    def test_output_audit_rejects_json_escaped_path_text(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="KORYAO JSON path audit ") as temporary:
+            private_path = Path(temporary) / r"private\app data" / "source proof.png"
+            payload = json.dumps(
+                {"source": os.fspath(private_path)},
+                ensure_ascii=False,
+            )
+            with self.assertRaises(sidecar_tester.SidecarTestError):
+                sidecar_tester._assert_paths_redacted(
+                    payload,
+                    (private_path,),
+                    stage="JSON escaped fixture",
+                )
+
     def test_output_audit_form_urlencoded_paths_preserve_real_plus(self) -> None:
         with tempfile.TemporaryDirectory(prefix="stage4-quote-plus-") as temporary:
             root = Path(temporary).resolve()

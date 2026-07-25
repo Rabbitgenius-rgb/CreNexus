@@ -542,7 +542,15 @@ def _assert_paths_redacted(
         protected_representations: set[str] = set()
         for candidate in (absolute, resolved):
             raw = os.fspath(candidate)
-            protected_representations.update({raw, candidate.as_uri()})
+            uri = candidate.as_uri()
+            protected_representations.update(
+                {
+                    raw,
+                    uri,
+                    urllib.parse.unquote(uri, errors="replace"),
+                    json.dumps(raw, ensure_ascii=False)[1:-1],
+                }
+            )
         if any(
             representation and representation in observed
             for observed in observed_views
