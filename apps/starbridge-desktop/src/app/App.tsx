@@ -267,7 +267,7 @@ export function App({ client: providedClient }: AppProps) {
     };
     switch (page) {
       case "home":
-        return <HomePage status={status} connections={connections} recentTasks={tasks} license={license} version={version} onNavigate={setPage} />;
+        return <HomePage status={status} connections={connections} connectionsLoading={connectionsLoading} connectionsError={connectionsError} recentTasks={tasks} license={license} version={version} onNavigate={setPage} />;
       case "codex-conversation":
         return <CodexConversationPage client={client} connections={connections} runtimeReady={status.state === "connected"} onOpenConnections={() => setPage("integrations")} />;
       case "projects":

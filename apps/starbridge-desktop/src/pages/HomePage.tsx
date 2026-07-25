@@ -22,6 +22,8 @@ import type {
 interface HomePageProps {
   status: RuntimeStatus;
   connections: ConnectionOverview | null;
+  connectionsLoading: boolean;
+  connectionsError: string;
   recentTasks: CreativeJob[];
   license: LicenseStatus;
   version: VersionInfo | null;
@@ -57,7 +59,16 @@ function formatUpdatedAt(value: string) {
   }).format(date);
 }
 
-export function HomePage({ status, connections, recentTasks, license, version, onNavigate }: HomePageProps) {
+export function HomePage({
+  status,
+  connections,
+  connectionsLoading,
+  connectionsError,
+  recentTasks,
+  license,
+  version,
+  onNavigate,
+}: HomePageProps) {
   const runtimeReady = status.state === "connected";
   const drawingReady = runtimeReady && connections?.drawing_enabled === true;
   const allApplications = connections?.applications ?? [];
@@ -72,6 +83,14 @@ export function HomePage({ status, connections, recentTasks, license, version, o
     : runtimeReady
       ? "前往连接中心完成关联"
       : "等待本地服务就绪";
+  const bridgeErrorVisible = applications.length === 0 && Boolean(connectionsError);
+  const bridgeLoadingVisible = applications.length === 0
+    && !bridgeErrorVisible
+    && (connectionsLoading || connections === null);
+  const bridgeEmptyVisible = applications.length === 0
+    && !bridgeErrorVisible
+    && !bridgeLoadingVisible
+    && connections !== null;
 
   return (
     <div className="home-page editorial-home">
@@ -154,13 +173,20 @@ export function HomePage({ status, connections, recentTasks, license, version, o
               <button type="button" onClick={() => onNavigate("integrations")}>打开 {application.mark}<IconArrowRight aria-hidden="true" /></button>
             </article>
           ))}
-          {!applications.length && connections === null ? (
+          {bridgeLoadingVisible ? (
             <article className="bridge-card bridge-loading" aria-live="polite">
               <span className="bridge-mark">…</span>
               <div className="bridge-summary"><div><strong>正在检测本机软件桥</strong><em>● 检测中</em></div><p>只读取固定安装、进程和回环接口线索。</p></div>
             </article>
           ) : null}
-          {!applications.length && connections !== null ? (
+          {bridgeErrorVisible ? (
+            <article className="bridge-card bridge-loading" role="alert">
+              <span className="bridge-mark">!</span>
+              <div className="bridge-summary"><div><strong>软件桥状态读取失败</strong><em className="application-unavailable">● 需要重试</em></div><p>{connectionsError}</p></div>
+              <button type="button" onClick={() => onNavigate("integrations")}>打开连接中心<IconArrowRight aria-hidden="true" /></button>
+            </article>
+          ) : null}
+          {bridgeEmptyVisible ? (
             <article className="bridge-card bridge-loading">
               <span className="bridge-mark">0</span>
               <div className="bridge-summary"><div><strong>尚未检测到可用软件桥</strong><em>● 待配置</em></div><p>前往连接中心检查安装状态、进程和本机桥接配置。</p></div>

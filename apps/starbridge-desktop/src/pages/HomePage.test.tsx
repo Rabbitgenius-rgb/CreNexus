@@ -76,6 +76,8 @@ function connections(applications: CreativeApplicationConnection[] = []): Connec
 function renderHome(options?: {
   status?: RuntimeStatus;
   connections?: ConnectionOverview | null;
+  connectionsLoading?: boolean;
+  connectionsError?: string;
   onNavigate?: (page: PageId) => void;
 }) {
   const onNavigate = options?.onNavigate ?? vi.fn();
@@ -83,6 +85,8 @@ function renderHome(options?: {
     <HomePage
       status={options?.status ?? CONNECTED_STATUS}
       connections={options?.connections === undefined ? connections() : options.connections}
+      connectionsLoading={options?.connectionsLoading ?? false}
+      connectionsError={options?.connectionsError ?? ""}
       recentTasks={[]}
       license={COMMUNITY_LICENSE}
       version={{ desktop: "0.1.0" }}
@@ -115,6 +119,8 @@ describe("HomePage", () => {
       <HomePage
         status={CONNECTED_STATUS}
         connections={connections([])}
+        connectionsLoading={false}
+        connectionsError=""
         recentTasks={[]}
         license={COMMUNITY_LICENSE}
         version={{ desktop: "0.1.0" }}
@@ -126,9 +132,25 @@ describe("HomePage", () => {
     expect(screen.queryByText("正在检测本机软件桥")).not.toBeInTheDocument();
 
     unmount();
-    renderHome({ connections: null });
+    renderHome({ connections: null, connectionsLoading: true });
     expect(screen.getByText("正在检测本机软件桥")).toBeInTheDocument();
     expect(screen.queryByText("尚未检测到可用软件桥")).not.toBeInTheDocument();
+  });
+
+  it("shows a connection read failure instead of an endless loading card", () => {
+    const onNavigate = vi.fn();
+    renderHome({
+      connections: null,
+      connectionsLoading: false,
+      connectionsError: "本机连接服务暂时没有响应。",
+      onNavigate,
+    });
+
+    expect(screen.getByRole("alert")).toHaveTextContent("软件桥状态读取失败");
+    expect(screen.getByRole("alert")).toHaveTextContent("本机连接服务暂时没有响应。");
+    expect(screen.queryByText("正在检测本机软件桥")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "打开连接中心" }));
+    expect(onNavigate).toHaveBeenCalledWith("integrations");
   });
 
   it("uses truthful privacy wording for explicitly enabled anonymous metrics", () => {
