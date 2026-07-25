@@ -1,200 +1,187 @@
-# 🤝 KORYAO 正在寻找合作伙伴 / Looking for Collaborators
-
-KORYAO 正在寻找愿意一起把产品做完、测透并推向真实客户的开发者、设计师、测试人员、创意软件专家和商业合作伙伴。请联系：**[jianbaorui07@gmail.com](mailto:jianbaorui07@gmail.com)**。
-
-> KORYAO is looking for developers, designers, QA engineers, creative-software specialists, and business partners who want to help finish, validate, and ship the product to real customers. Contact: **[jianbaorui07@gmail.com](mailto:jianbaorui07@gmail.com)**.
-
 <p align="center">
-  <img src="brand/exports/koryao-software-icon.png" width="180" alt="KORYAO software icon">
+  <img src="brand/exports/koryao-software-icon.png" width="156" alt="KORYAO Basic software icon">
 </p>
 
-# 构曜纪基础版｜KORYAO基础版：基于 Codex 的本地创意软件 / A Codex-Powered Local Creative App
+<h1 align="center">KORYAO Basic｜构曜纪基础版</h1>
 
-[![CI](https://github.com/jianbaorui07-dot/KORYAO-basic/actions/workflows/ci.yml/badge.svg)](https://github.com/jianbaorui07-dot/KORYAO-basic/actions/workflows/ci.yml)
-![Windows first](https://img.shields.io/badge/Windows-first-2563eb)
-![MCP stdio](https://img.shields.io/badge/MCP-stdio-16a34a)
-![Local first](https://img.shields.io/badge/local--first-safe-0f766e)
-![Python](https://img.shields.io/badge/python-3.10%2B-blue)
-![License: Proprietary](https://img.shields.io/badge/License-Proprietary-red.svg)
+<p align="center">
+  面向设计师与创意工作者的本地 AI 工作台：把 Codex、图片矢量化、任务验证与创意软件交付连接成一条可追溯流程。
+</p>
 
-当前发布边界 / Current release boundary: **v0.1-alpha**。核心安全探针和本地像素重建标记为 `stable`；桌面端与 Adobe 写入链路为 `experimental`；其余尚未交付的能力标记为 `planned` 或 `not implemented`。
+<p align="center">
+  <strong>Local-first · Windows-first · Safe-by-default · Evidence-backed</strong>
+</p>
+
+<p align="center">
+  <a href="https://github.com/jianbaorui07-dot/KORYAO-basic/actions/workflows/ci.yml"><img src="https://github.com/jianbaorui07-dot/KORYAO-basic/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <img src="https://img.shields.io/badge/version-v0.1.0--alpha.2-f59e0b" alt="version">
+  <img src="https://img.shields.io/badge/Python-3.10%2B-2563eb" alt="Python 3.10+">
+  <img src="https://img.shields.io/badge/MCP-stdio-16a34a" alt="MCP stdio">
+  <img src="https://img.shields.io/badge/license-KORYAO%20Proprietary-b91c1c" alt="KORYAO Proprietary License">
+</p>
+
+---
+
+当前发布边界 / Current release boundary: **v0.1-alpha**。核心安全探针和像素重建（精确重建）标记为 `stable`；桌面端、Adobe 写入和本地模型运行端标记为 `experimental`；其余能力按证据标记为 `planned` 或 `not implemented`。
 
 > AutoCAD/DXF plan validate / dry-run / guarded write. Photoshop, Illustrator, Blender, and CapCut write flows are experimental or planned.
 
----
+## 项目定位
 
-# 第一部分：先用大白话讲清楚 / Part I: The Plain-Language Overview
+KORYAO Basic 不是“套壳聊天页面”，也不是把图片上传到远程服务器的在线工具。它由三个部分组成：
 
-<h2 align="center">一张图片 → 像素重建 → SVG → 可选 AI / PSD</h2>
-<p align="center"><strong>One image → Pixel Reconstruction → SVG → optional AI / PSD</strong></p>
+1. **Codex 调度层**：理解用户目标，选择合适的 Skill 与 MCP 工具。
+2. **本地安全运行时**：限制路径、要求确认、执行任务、验证结果并生成脱敏记录。
+3. **创意生产工具链**：完成图片矢量化、Adobe 文件交付、ComfyUI/CAD/Blender 等桥接任务。
 
-## 把图片放进去，拿到真正可以交付的文件 / Put an Image In, Get a Deliverable File Out
-
-KORYAO 不是一个只有按钮的演示页面。它把 **Codex 对话、本机任务执行、图片矢量化、结果核对、输出目录和 Adobe 文件交付** 放进同一个 Windows 桌面软件里。
-
-> KORYAO is not a button-only demo. It brings **Codex conversation, local task execution, image vectorization, result verification, output management, and Adobe delivery** into one Windows desktop application.
-
-你可以在软件里选择项目和图片，用自然语言告诉 Codex 想做什么，也可以直接操作页面。KORYAO 在本机执行任务，不把客户图片上传到 KORYAO 服务器。
-
-> You can select a project and image, tell Codex what you want in natural language, or operate the workflow directly. KORYAO performs the work locally and does not upload customer images to a KORYAO server.
-
-## 当前最主要的功能：像素重建 / Main Feature: Pixel Reconstruction
-
-**像素重建（精确重建）**已经放进“图片矢量化”页面的五模式选择区，并作为默认选项。它把选定工作分辨率中的每个 RGBA 像素重新画成真正的 SVG 几何，再把 SVG 渲染回来逐像素核对。
-
-> **Pixel Reconstruction** is now a visible card in the five-mode Vectorization page and is selected by default. It redraws every RGBA pixel at the chosen working resolution as real SVG geometry, renders the SVG back, and verifies it pixel by pixel.
-
-它不是把 PNG 塞进 SVG，也不调用 Illustrator Image Trace。生成结果没有嵌入位图、Base64 图片、脚本或外部链接。
-
-> It does not hide a PNG inside an SVG, and it does not call Illustrator Image Trace. The generated result contains no embedded raster, Base64 image, script, or external link.
-
-### 普通客户看到的流程 / What a Customer Sees
+核心目标是让创意任务形成一条清楚的本地闭环：
 
 ```text
-Codex 对话或手动操作 / Codex chat or direct controls
-→ 选择项目和图片 / Choose a project and image
-→ 像素重建 / Pixel Reconstruction
-→ 逐像素核对 / Pixel-by-pixel verification
-→ 预览并打开输出文件夹 / Preview and open the output folder
-→ 可选：选择新路径导出 AI 或 PSD / Optional: choose a new path for AI or PSD
+提出目标 → 选择素材 → 本机执行 → 质量核对 → 预览结果 → 导出交付 → 保存证据
 ```
 
-桌面端可以选择 512、1024、1600、2048 或原始尺寸作为工作最长边；SVG 安全上限可以选择 64、128 或 256 MB，默认 128 MB。超过所选上限时任务会停止，不会覆盖原图，也不会偷偷降级成图像描摹。
+> 当前版本仍处于 Alpha 阶段。像素重建与核心安全探针已有明确验证；桌面端、Adobe 写入、本地私有模型运行端等能力仍按 `experimental` 标记；尚未完成的功能不会包装成已交付能力。
 
-> The desktop app lets the user choose 512, 1024, 1600, 2048, or the original size as the working longest edge. The SVG safety limit can be set to 64, 128, or 256 MB, with 128 MB as the default. If the selected limit is exceeded, the job stops without overwriting the source or silently falling back to Image Trace.
+## 当前能力状态
 
-## 五种图片处理方式 / Five Image Modes
-
-| 模式 / Mode | 大白话说明 / Plain-language description | 当前定位 / Current role |
+| 能力 | 状态 | 说明 |
 | --- | --- | --- |
-| **像素重建 / Pixel Reconstruction** (`exact`) | 尽量忠实地把工作分辨率的每个像素变成 SVG 几何 / Rebuild every working-resolution pixel as SVG geometry | **默认主推 / Default** |
-| **99% 可编辑 / Editable 99** (`editable-99`) | 逐候选回渲染，五项质量门槛全部通过后选择复杂度更低的 SVG / Re-render every candidate and minimize complexity only after all five quality gates pass | 高保真继续编辑 / High-fidelity editing |
-| **匠心矢量 / Artisan Vector** | 用更少锚点和更顺的曲线做可编辑结果 / Create editable results with fewer anchors and smoother curves | 高级可编辑 / Advanced editing |
-| **智能矢量 / Smart Vector** | 在相似度、细节和编辑性之间取平衡 / Balance similarity, detail, and editability | 通用插画 / General illustration |
-| **轻量矢量 / Lightweight Vector** | 减少颜色、碎片和节点，让文件更轻 / Reduce colors, fragments, and nodes | Logo、图标和纹样 / Logos, icons, and patterns |
+| 像素重建（精确重建） / Pixel Reconstruction | **Stable core** | 将工作分辨率中的 RGBA 像素重建为真实 SVG 几何，并逐像素回渲染核对 |
+| Editable-99 | **Available** | 使用 SSIM、difference、MAE、edge Dice、alpha MAE 五项门槛筛选高保真候选 |
+| 匠心 / 智能 / 轻量矢量 | **Available** | 面向插画、图标、Logo 与纹样的不同编辑性和复杂度需求 |
+| Codex + MCP 本地调度 | **Available** | 项目级配置、安全工具注册、任务计划和脱敏证据已实现 |
+| Windows 桌面端 | **Experimental** | 已有启动、关闭、重启和 sidecar 生命周期证据，仍需更多干净机器验收 |
+| AI / PSD 原生交付 | **Experimental** | Windows 上调用 Illustrator / Photoshop，要求确认、验证和不覆盖 |
+| KORYAO-C1 本地模型运行端 | **Experimental** | 仅通过 loopback 接收结构化任务元数据，不直接读取磁盘或执行软件 |
+| macOS 桌面端 | **Planned** | 当前只支持核心 Python/MCP 路径和前端单独构建 |
+| ComfyUI / Blender / CAD / 剪映闭环 | **Partial / Planned** | 已有探针、协议、dry-run 或实验实现，尚未完成统一客户级验收 |
+| 正式商业发布 | **Not released** | 仍缺代码签名、SmartScreen、升级回滚、正式安装包和售后流程 |
 
-## AI、PSD 和保存路径 / AI, PSD, and Save Paths
+## 五种图片矢量化模式
 
-“交付与证据”页面已经提供 **AI / PSD 格式选择、来源文件选择、明确确认和系统保存路径窗口**。Windows 上安装并授权对应 Adobe 软件后，KORYAO 会先在暂存区生成文件，再用 Adobe 原生程序重新打开验证，最后写入用户选择的新路径；已有文件不会被覆盖。
+| 模式 | 适合场景 | 主要特点 |
+| --- | --- | --- |
+| **像素重建 `exact`** | 像素级存档、忠实复刻 | 每个像素转为 SVG 几何；不嵌入 PNG、Base64、脚本或外链 |
+| **Editable-99 `editable-99`** | 高保真后续编辑 | 只有五项质量指标全部通过，候选结果才会进入最终选择 |
+| **匠心矢量 `artisan`** | 插画、传统纹样、复杂图形 | 更少锚点、更顺曲线，强调可编辑性 |
+| **智能矢量 `smart`** | 通用设计素材 | 平衡相似度、细节与文件复杂度 |
+| **轻量矢量 `lightweight`** | Logo、图标、标识 | 减少颜色、碎片、节点和文件体积 |
 
-> The Delivery & Evidence page now provides **AI/PSD format selection, source selection, explicit confirmation, and a native save-path dialog**. On Windows, when the corresponding Adobe application is installed and licensed, KORYAO generates the file in staging, reopens it in the native Adobe application for validation, and only then writes it to the newly selected path. Existing files are never overwritten.
+默认工作最长边为 `1024`，可选 `512 / 1600 / 2048 / 原始尺寸`。SVG 安全上限可选 `64 / 128 / 256 MB`，超过上限时任务会停止，不覆盖原图，也不会静默降级为 Illustrator Image Trace。
 
-这条 Adobe 链路已经有实现和自动化测试，但不同 Photoshop、Illustrator 版本及不同客户机器的完整兼容矩阵仍处于实验验收阶段。
+## 快速开始
 
-> The Adobe path is implemented and covered by automated tests, but the full compatibility matrix across Photoshop, Illustrator, and customer machines is still under experimental validation.
+### Windows：安装核心环境
 
----
+最低要求：Git 64 位、Python 3.10+。运行桌面端还需要 Node.js 22 LTS、Rust stable MSVC、Microsoft C++ Build Tools 与 WebView2。
 
-# 第二部分：技术、架构与专业边界 / Part II: Technology, Architecture, and Professional Boundaries
-
-## Codex 在软件里负责什么 / What Codex Does
-
-Codex 是理解和调度层：用户在“Codex 对话”页面提出目标，Codex 选择合适的 Skill 和 MCP 工具；KORYAO 本地运行时负责真正执行、限制路径、要求确认、验证结果并生成脱敏证据。
-
-> Codex is the reasoning and orchestration layer. The user states a goal in the Codex Conversation page, Codex selects the appropriate Skill and MCP tool, and the KORYAO local runtime performs the actual work, constrains paths, requests confirmation, verifies results, and records redacted evidence.
-
-```mermaid
-flowchart LR
-  A["用户 / User"] --> B["Codex 对话 / Conversation"]
-  B --> C["Codex Skills"]
-  C --> D["KORYAO MCP"]
-  D --> E["本机安全层 / Local safety layer"]
-  E --> F["像素重建与矢量引擎 / Vector engines"]
-  E --> G["Adobe / ComfyUI / CAD / Blender bridges"]
-  F --> H["SVG、预览与报告 / SVG, preview, report"]
-  G --> I["受控外部软件结果 / Controlled app outputs"]
+```powershell
+git clone https://github.com/jianbaorui07-dot/KORYAO-basic.git
+Set-Location .\KORYAO-basic
+powershell -ExecutionPolicy Bypass -File .\bootstrap.ps1 -Profile auto
 ```
 
-## 像素重建的技术边界 / Pixel Reconstruction Boundaries
+`bootstrap.ps1` 会：
 
-| 项目 / Item | 当前规则 / Current rule |
-| --- | --- |
-| 输入 / Input | 单张、明确授权的 PNG 或 JPEG；不扫描整个私有目录 / One explicitly authorized PNG or JPEG; no recursive private-directory scan |
-| 重建 / Reconstruction | 连续同色像素合并为矩形复合路径，保留 RGBA / Merge continuous same-color pixels into compound rectangular paths while preserving RGBA |
-| 工作尺寸 / Working size | 默认最长边 1024，可选 512 / 1600 / 2048 / 原始尺寸 / Default longest edge 1024; optional 512 / 1600 / 2048 / original |
-| 安全上限 / Safety cap | 可选 64 / 128 / 256 MB，产品硬上限 256 MB / Selectable 64 / 128 / 256 MB; product hard cap 256 MB |
-| 验证 / Verification | 复读尺寸、路径、颜色、透明度和像素差异 / Recheck dimensions, paths, colors, alpha, and pixel differences |
-| 禁止内容 / Rejected content | 位图、Base64、脚本、外链、越界坐标 / Raster images, Base64, scripts, external links, out-of-bounds coordinates |
-| 失败行为 / Failure behavior | 停止并报告，不覆盖源图，不回退 Image Trace / Stop and report; never overwrite the source or fall back to Image Trace |
+- 在仓库内创建 `.venv`；
+- 安装匹配的 Python/MCP 依赖；
+- 生成项目级 `.codex/config.toml`；
+- 运行安全预检；
+- 不修改无关的系统级软件。
 
-像素重建强调“验证过的忠实结果”，不等于“少节点、好编辑”。需要严格质量门槛时选择 `editable-99`；只需绘制型编辑时可选择匠心、智能或轻量矢量。`high-fidelity` 仍是约 15% 结构差异门槛，不能标注为 99%。
+完成后，在该仓库中新建一个 Codex 任务，让 Codex 重新加载 MCP 配置。
 
-> Pixel Reconstruction optimizes for verified fidelity, not minimal nodes or easy curve editing. Choose `editable-99` for strict verified quality, or Artisan, Smart, or Lightweight for drawing-oriented editing. The legacy `high-fidelity` gate still allows about 15% structural difference and is not a 99% claim.
+### 启动 Windows 桌面端
 
-### Editable-99 质量与 Illustrator 保护
+```powershell
+npm.cmd ci --prefix apps\starbridge-desktop
+powershell -ExecutionPolicy Bypass -File apps\starbridge-desktop\scripts\Build-Sidecar.ps1
+npm.cmd run tauri:dev --prefix apps\starbridge-desktop
+```
 
-`editable-99` 固定检查 `SSIM ≥ 0.990`、`difference ≤ 1.0%`、`normalized MAE ≤ 0.010`、`edge Dice ≥ 0.980`、`alpha MAE ≤ 0.005`。它按 `256、192、160、128、96、80、64、48、32` 色生成候选，每个候选都重新渲染；任一门槛失败就不能进入最终选择。通过集合按子路径、节点、颜色、SVG 大小和耗时排序；误差集中时可用 256 色局部恢复，恢复后重新计算全部指标。
+只验证核心服务：
 
-Illustrator 自动打开只对 `subpaths ≤ 30,000` 且 `points ≤ 120,000` 的建议安全范围开放。超过建议范围需要警告和备份；`subpaths > 60,000` 或 `points > 240,000` 默认禁止自动打开；`subpaths > 300,000` 只做精确存档。以上是 CreNexus 工程保护阈值，不是 Adobe 官方硬上限。
+```powershell
+.\.venv\Scripts\python.exe scripts\starbridge_preflight.py --markdown
+.\.venv\Scripts\python.exe -m starbridge_mcp.server tools --json --safe-only
+```
 
-状态为 `passed_editable_99`、`passed_quality_high_complexity`、`quality_not_met`、`quality_and_editability_conflict`、`resource_limit_exceeded` 或 `execution_failed`，不会静默降低门槛。
+### macOS：先运行核心 MCP
 
-## Adobe 原生交付规则 / Native Adobe Delivery Rules
+```bash
+git clone https://github.com/jianbaorui07-dot/KORYAO-basic.git
+cd KORYAO-basic
+bash ./bootstrap.sh --profile auto
+```
 
-- SVG → AI：调用本机 Illustrator，保存后重新打开，检查画板和对象，再发布到用户选择的路径。
+该脚本不会自动安装或修改 Homebrew、Xcode、Rosetta，也不会把当前前端构建描述成可运行的 macOS 桌面版。
 
-  > SVG → AI: invoke local Illustrator, save and reopen the file, verify artboards and objects, then publish it to the user-selected path.
+```bash
+./.venv/bin/python scripts/starbridge_preflight.py --markdown
+./.venv/bin/python -m starbridge_mcp.server tools --json --safe-only
+```
 
-- PNG/JPEG → PSD：调用本机 Photoshop，建立图层文档，保存后重新打开，检查画布和图层，再发布到用户选择的路径。
-
-  > PNG/JPEG → PSD: invoke local Photoshop, create a layered document, save and reopen it, verify the canvas and layers, then publish it to the user-selected path.
-
-- 两条路径都要求用户先勾选确认；取消路径选择不会产生文件；失败或超时会清理未完成文件。
-
-  > Both paths require explicit confirmation. Cancelling the save dialog creates no file, and failed or timed-out exports clean up incomplete files.
-
-- 当前原生 AI/PSD 导出只支持 Windows；macOS 会明确返回“不支持”，不会显示假成功。
-
-  > Native AI/PSD export currently supports Windows only. macOS returns an explicit unsupported result instead of a false success.
-
-## 本地优先与安全模型 / Local-First Safety Model
-
-- 默认只读、计划或 `dry-run`；真实写入必须明确确认。
-
-  > Read-only, planning, or `dry-run` by default; real writes require explicit confirmation.
-
-- 输出限制在 safe roots、项目产物目录或用户明确选择的新路径。
-
-  > Outputs are restricted to safe roots, project artifact directories, or a new path explicitly selected by the user.
-
-- 报告保存哈希、相对引用和状态，不保存 Token、Cookie、OAuth、客户素材或绝对保存路径。
-
-  > Reports store hashes, relative references, and status—not tokens, cookies, OAuth data, customer assets, or absolute save paths.
-
-- Community 免费版无需登录或联网；当前源码版本采用 KORYAO 自有许可证。
-
-  > Community is free and requires no login or network connection; the current source revision uses the KORYAO Proprietary License.
-
-详细设计见 [产品事实](docs/PRODUCT_FACTS.md)、[架构 V2](docs/ARCHITECTURE_V2.md)、[五模式矢量化](docs/vectorization-modes.md)和[像素重建](docs/exact-pixel-vectorization.md)。
-
-> See [Product Facts](docs/PRODUCT_FACTS.md), [Architecture V2](docs/ARCHITECTURE_V2.md), [Vectorization Modes](docs/vectorization-modes.md), and [Pixel Reconstruction](docs/exact-pixel-vectorization.md) for technical details.
-
-## 开发者快速调用 / Developer Quick Call
+## 命令行矢量化
 
 ```powershell
 python -m pip install -e ".[vectorization]"
+
 npm.cmd run illustrator:vectorize -- --input "<input.png>" --mode exact --max-dimension 1024 --max-svg-size-mb 128 --reference-id "reference"
-```
-
-可编辑矢量模式 / Editable vector modes:
-
-```powershell
-npm.cmd run illustrator:vectorize -- --input "<input.png>" --mode artisan --reference-id "reference"
 npm.cmd run illustrator:vectorize -- --input "<input.png>" --mode editable-99 --quality-preset editable-99 --target-difference 1.0 --reference-id "reference"
+npm.cmd run illustrator:vectorize -- --input "<input.png>" --mode artisan --reference-id "reference"
 npm.cmd run illustrator:vectorize -- --input "<input.png>" --mode smart --reference-id "reference"
 npm.cmd run illustrator:vectorize -- --input "<input.png>" --mode lightweight --reference-id "reference"
 ```
 
+## 安全与隐私边界
+
+- 默认只读、计划或 `dry-run`；真实写入必须由用户明确确认。
+- 输出限制在安全根目录、项目产物目录或用户明确选择的新路径。
+- 不递归扫描私人目录，不覆盖源文件，不静默降低质量门槛。
+- 报告只保存哈希、相对引用和状态，不保存 Token、Cookie、OAuth、客户素材或真实绝对路径。
+- KORYAO-C1 本地模型运行端只接收经过 schema 校验的任务元数据、素材 ID 和 Adapter 白名单。
+- Community 基础能力无需登录或联网；当前源码修订采用 KORYAO 自有许可证。
+
+请勿把 Token、Cookie、Adobe 授权信息、客户素材或真实保存路径提交到 GitHub。
+
+## 架构概览
+
+```mermaid
+flowchart LR
+  A["用户 / User"] --> B["Codex 对话"]
+  B --> C["Codex Skills"]
+  C --> D["KORYAO MCP"]
+  D --> E["本地安全层"]
+  E --> F["矢量化与验证引擎"]
+  E --> G["Adobe / ComfyUI / CAD / Blender Adapter"]
+  E --> H["KORYAO-C1 本地模型运行端"]
+  F --> I["SVG / 预览 / 质量报告"]
+  G --> J["受控软件交付结果"]
+  H --> K["计划 / 评估 / 修复建议"]
+```
+
 ## 中文阅读指南与仓库区域标注
 
-- **图像生成区**：`examples/comfy_bridge/` 和相关安全探针。
-- **工程制图区**：`cad-mcp-autocad/`、`scripts/` 与 AutoCAD/DXF 计划、验证和受控写入。
-- **AI 矢量文件桥**：Illustrator 接入、环境变量和预检说明见 [docs/05-codex-illustrator.md](docs/05-codex-illustrator.md)。
-- 剪映/CapCut 接入只做显式探针；找不到**剪映可执行文件**时返回不可用，不扫描私人草稿目录。
+- **图像生成区**：`examples/comfy_bridge/` 与相关安全探针，面向 ComfyUI 工作流验证和模板调用。
+- **工程制图区**：`cad-mcp-autocad/`、`scripts/` 与 AutoCAD/DXF 计划、验证、dry-run 和受控写入。
+- **AI 矢量文件桥**：Illustrator 接入、环境变量和预检见 [docs/05-codex-illustrator.md](docs/05-codex-illustrator.md)。
+- 剪映/CapCut 接入目前只做显式探针；找不到**剪映可执行文件**时返回不可用，不扫描私人草稿目录。
 
-更多索引见 [Adobe 演示图库](docs/adobe-demo-gallery.md)、[Adobe 演示冒烟测试](docs/adobe-demo-smoke-test.md)和[发布说明草案](RELEASE_NOTES_DRAFT.md)。
+## 仓库导航
 
-## 发布候选验证命令 / Release-candidate checks
+| 路径 | 用途 |
+| --- | --- |
+| `.codex/skills/starbridge-*` | Codex Skills、安全边界与验证命令 |
+| `starbridge_mcp/` | MCP server、工具注册、任务引擎与安全层 |
+| `model_contracts/` | KORYAO 本地模型协议与 JSON Schema |
+| `apps/starbridge-desktop/` | Tauri 2 + React 桌面端 |
+| `apps/starbridge-site/` | 产品说明站点 |
+| `product/` | 机器可读产品事实与能力状态 |
+| `examples/` | 默认安全的桥接示例 |
+| `tests/` | 离线、集成、质量与安全测试 |
+| `docs/` | 架构、协议、接入和发布边界 |
+
+## 发布前验证
 
 ```powershell
 python scripts/security_check.py
@@ -208,191 +195,37 @@ python scripts\starbridge_preflight.py --markdown
 python scripts\starbridge_preflight.py --write-report --soft-exit
 ```
 
----
+CI 是每次合并的最终准线。历史功能基线曾通过 836 个 Python 测试、34 个前端测试和 27 个 Rust 测试，但任何新提交都应以本次 CI 结果为准。
 
-# 第三部分：迭代数据、已完成与未完成 / Part III: Iteration Data, Completed Work, and Open Work
+## 近期路线图
 
-## 当前版本 / Current Version
+1. 完成 Windows 签名安装包、SmartScreen、干净机器和升级回滚验证。
+2. 扩大 Photoshop / Illustrator 多版本、多语言和异常恢复矩阵。
+3. 将 ComfyUI、Blender、AutoCAD 与剪映从探针或实验状态推进到可复现闭环。
+4. 完善 KORYAO-C1 本地模型协议、失败降级和桌面可观测性。
+5. 建立正式隐私说明、支持流程、版本策略与商业交付边界。
 
-当前公开版本为 **v0.1.0-alpha.2**。Community 基础能力免费且无需激活；当前公开源码修订采用 KORYAO 自有许可证，历史版本保留其发布时随附的许可证权利。桌面产品、安装器和第三方软件写入仍按各自证据等级标记为 stable、experimental 或 planned，不能把“代码存在”写成“所有客户机器都已验收”。
+## 文档索引
 
-> The current public version is **v0.1.0-alpha.2**. Community baseline capabilities are free and require no activation. The current public source revision uses the KORYAO Proprietary License, while historical revisions retain the license rights distributed with them. The desktop product, installer, and third-party write paths remain labeled stable, experimental, or planned according to their evidence level; code existence must not be presented as acceptance on every customer machine.
+- [产品事实](docs/PRODUCT_FACTS.md)
+- [架构 V2](docs/ARCHITECTURE_V2.md)
+- [五模式矢量化](docs/vectorization-modes.md)
+- [像素重建](docs/exact-pixel-vectorization.md)
+- [Illustrator 接入](docs/05-codex-illustrator.md)
+- [Adobe 演示图库](docs/adobe-demo-gallery.md)
+- [Adobe 演示冒烟测试](docs/adobe-demo-smoke-test.md)
+- [发布说明草案](RELEASE_NOTES_DRAFT.md)
+- [安全说明](SECURITY.md)
+- [贡献指南](CONTRIBUTING.md)
 
-## 小规模实测数据 / Small-Scope Measured Results
+## 合作与反馈
 
-这些数字只代表已记录样例，不代表所有图片都能得到相同结果。
+KORYAO 正在寻找愿意参与产品开发、视觉设计、测试验收、创意软件接入和商业落地的合作伙伴。
 
-> These numbers describe recorded samples only and do not promise identical results for every image.
+- 可复现缺陷与文档问题：请提交 GitHub Issue。
+- 商业合作与联合开发：`jianbaorui07@gmail.com`
+- 请勿在 Issue、PR 或附件中上传客户素材、私有授权文件和敏感路径。
 
-| 样例或迭代 / Sample or iteration | 指标 / Metric | 结果 / Result |
-| --- | --- | ---: |
-| 中央红鲤像素重建 / Central red-carp reconstruction | 输出尺寸 / Output size | 384 × 512 |
-| 中央红鲤像素重建 / Central red-carp reconstruction | SVG 大小 / SVG size | 8,277,677 bytes |
-| 中央红鲤像素重建 / Central red-carp reconstruction | 耗时 / Runtime | 1.47 s |
-| 中央红鲤像素重建 / Central red-carp reconstruction | 差异像素 / Different pixels | 0 |
-| 中央红鲤像素重建 / Central red-carp reconstruction | 最大通道差异 / Maximum channel difference | 0 |
-| 中央红鲤像素重建 / Central red-carp reconstruction | 嵌入位图 / Embedded rasters | 0 |
-| 匠心 Iteration 4 → 5 / Artisan Iteration 4 → 5 | 中心线锚点 / Centerline anchors | 30,813 → 24,875 (-19.27%) |
-| 匠心 Iteration 4 → 5 / Artisan Iteration 4 → 5 | 子路径 / Subpaths | 10,309 → 8,064 (-21.78%) |
-| 匠心 Iteration 4 → 5 / Artisan Iteration 4 → 5 | SVG 大小 / SVG size | 1,014,783 → 861,890 bytes (-15.07%) |
+## 许可证
 
-## 已经跑通或已有明确证据 / Completed or Evidence-Backed
-
-| 能力 / Capability | 当前结论 / Current conclusion |
-| --- | --- |
-| Windows 桌面启动 / Windows desktop startup | 已有本机启动、关闭、二次启动和 sidecar 生命周期证据；整体仍标记 experimental / Local startup, shutdown, relaunch, and sidecar lifecycle are evidenced; overall status remains experimental |
-| Codex 对话与 MCP / Codex conversation and MCP | 对话入口、连接状态、安全工具注册和项目级 `.codex/config.toml` 已实现 / Conversation entry, connection state, safe tool registry, and project-level `.codex/config.toml` are implemented |
-| 图片矢量化 / Image vectorization | 五种引擎已实现；像素重建是桌面默认入口，editable-99 提供独立的五项质量门槛 / Five engines are implemented; Pixel Reconstruction is the desktop default and editable-99 has independent five-metric gates |
-| 客户主流程 / Customer main flow | 选择项目与图片 → 像素重建 → 核对 → 预览 → 打开输出目录已接通 / Project and image selection → reconstruction → verification → preview → output folder is connected |
-| AI/PSD 交付界面 / AI/PSD delivery UI | 格式、来源、确认、路径选择、历史回执和不覆盖规则已实现 / Format, source, confirmation, path picker, receipt history, and no-overwrite rules are implemented |
-| 自动化验证 / Automated validation | 功能开发基线曾通过 836 个 Python 测试、34 个前端测试和 27 个 Rust 测试；CI 继续作为每次合并的实际准线 / The feature baseline passed 836 Python, 34 frontend, and 27 Rust tests; CI remains the per-merge source of truth |
-
-## 还没有完全跑通 / Not Fully Completed Yet
-
-| 项目 / Area | 还缺什么 / What remains |
-| --- | --- |
-| 正式 Windows 发布 / Production Windows release | Authenticode 签名、SmartScreen、干净机器矩阵、正式更新签名 / Authenticode signing, SmartScreen validation, clean-machine matrix, production updater signing |
-| Adobe 全版本兼容 / Full Adobe compatibility | 多版本 Photoshop/Illustrator、多语言安装、异常恢复和更多真实客户机器验收 / Multiple Photoshop/Illustrator versions, localized installs, recovery cases, and more customer-machine acceptance |
-| macOS 桌面端 / macOS desktop | Darwin sidecar、Tauri 桌面启动、macOS CI、原生 Adobe 导出 / Darwin sidecar, Tauri desktop startup, macOS CI, native Adobe export |
-| ComfyUI 生产闭环 / ComfyUI production loop | 更多真实安装方式、自定义节点、模型环境和失败恢复验收 / More real installations, custom nodes, model environments, and failure-recovery acceptance |
-| Blender、AutoCAD、剪映 / Blender, AutoCAD, CapCut | 目前以探针、计划、dry-run 或实验能力为主，尚未形成统一客户级闭环 / Currently probe, plan, dry-run, or experimental capabilities; no unified customer-grade loop yet |
-| 商业发布 / Commercial launch | 正式安装包、更新通道、隐私与售后流程、Pro 能力交付 / Signed installer, update channel, privacy/support processes, and Pro delivery |
-
-因此，当前最准确的说法是：**Windows 本地软件和像素重建主链路已经跑通到可继续客户验收的阶段；完整商业版、macOS 和所有第三方创意软件的广泛兼容仍未跑通。**
-
-> The most accurate statement today is: **the Windows local application and the Pixel Reconstruction main path are working well enough for continued customer acceptance testing; a full commercial release, macOS desktop support, and broad compatibility across all third-party creative tools are not finished yet.**
-
----
-
-# 第四部分：Windows / macOS 配置与 Codex 快速安装 / Part IV: Windows / macOS Setup and Fast Codex Installation
-
-## Windows：完整桌面能力优先 / Windows: Full Desktop Path
-
-### 最少准备 / Minimum prerequisites
-
-- Git 64 位、Python 3.10+。要运行桌面端，再安装 Node.js 22 LTS、Rust stable MSVC、Microsoft C++ Build Tools 和 WebView2。
-
-  > Install Git 64-bit and Python 3.10+. For the desktop app, also install Node.js 22 LTS, Rust stable MSVC, Microsoft C++ Build Tools, and WebView2.
-
-### 让 Codex 一次完成核心环境 / Let Codex Prepare the Core Environment
-
-把下面这段直接发给 Codex / Paste this directly into Codex:
-
-```text
-请克隆 https://github.com/jianbaorui07-dot/KORYAO-basic.git，进入仓库后运行
-powershell -ExecutionPolicy Bypass -File .\bootstrap.ps1 -Profile auto
-不要修改系统级软件；完成后运行安全预检，并告诉我 .codex/config.toml 是否生成成功。
-
-Clone https://github.com/jianbaorui07-dot/KORYAO-basic.git, enter the repository, run
-powershell -ExecutionPolicy Bypass -File .\bootstrap.ps1 -Profile auto
-Do not modify system-level software. Then run the safe preflight and report whether .codex/config.toml was created successfully.
-```
-
-手动执行 / Manual equivalent:
-
-```powershell
-git clone https://github.com/jianbaorui07-dot/KORYAO-basic.git
-Set-Location .\KORYAO
-powershell -ExecutionPolicy Bypass -File .\bootstrap.ps1 -Profile auto
-```
-
-`bootstrap.ps1` 会创建仓库内 `.venv`、安装匹配的 Python/MCP 依赖、生成项目级 `.codex/config.toml` 并运行安全检查。完成后，在这个仓库里新建一个 Codex 任务，让 Codex 重新载入 MCP 配置。
-
-> `bootstrap.ps1` creates a repository-local `.venv`, installs matching Python/MCP dependencies, writes project-level `.codex/config.toml`, and runs safe checks. When it finishes, open a new Codex task in this repository so Codex reloads the MCP configuration.
-
-### 启动 Windows 桌面端 / Start the Windows Desktop App
-
-```powershell
-npm.cmd ci --prefix apps\starbridge-desktop
-powershell -ExecutionPolicy Bypass -File apps\starbridge-desktop\scripts\Build-Sidecar.ps1
-npm.cmd run tauri:dev --prefix apps\starbridge-desktop
-```
-
-只想先验证核心时，运行 / To verify the core first:
-
-```powershell
-.\.venv\Scripts\python.exe scripts\starbridge_preflight.py --markdown
-.\.venv\Scripts\python.exe -m starbridge_mcp.server tools --json --safe-only
-```
-
-## macOS：先跑核心 MCP，不承诺桌面壳 / macOS: Core MCP First, Desktop Not Yet Promised
-
-### 最少准备 / Minimum prerequisites
-
-- Git、Python 3.10+。Node.js 只在需要前端构建或可选桥接时使用。
-
-  > Install Git and Python 3.10+. Node.js is only needed for frontend builds or optional bridges.
-
-### 让 Codex 一次完成安全核心 / Let Codex Prepare the Safe Core
-
-把下面这段直接发给 Codex / Paste this directly into Codex:
-
-```text
-请克隆 https://github.com/jianbaorui07-dot/KORYAO-basic.git，进入仓库后运行
-bash ./bootstrap.sh --profile auto
-不要安装或修改 Homebrew、Xcode、Rosetta 或系统级软件；完成后运行安全预检，并告诉我 .codex/config.toml 是否生成成功。
-
-Clone https://github.com/jianbaorui07-dot/KORYAO-basic.git, enter the repository, run
-bash ./bootstrap.sh --profile auto
-Do not install or modify Homebrew, Xcode, Rosetta, or system-level software. Then run the safe preflight and report whether .codex/config.toml was created successfully.
-```
-
-手动执行 / Manual equivalent:
-
-```bash
-git clone https://github.com/jianbaorui07-dot/KORYAO-basic.git
-cd KORYAO
-bash ./bootstrap.sh --profile auto
-```
-
-`bootstrap.sh` 会创建 `.venv`、安装安全 Python/MCP 路径、写入项目级 Codex MCP 配置并运行检查；它不会安装 Homebrew、Xcode、Rosetta，也不会启动 Tauri 桌面端。完成后同样需要在仓库中打开新的 Codex 任务。
-
-> `bootstrap.sh` creates `.venv`, installs the safe Python/MCP path, writes the project-level Codex MCP configuration, and runs checks. It does not install Homebrew, Xcode, or Rosetta and does not start Tauri. Open a new Codex task in the repository afterward.
-
-验证 macOS 核心 / Verify the macOS core:
-
-```bash
-./.venv/bin/python scripts/starbridge_preflight.py --markdown
-./.venv/bin/python -m starbridge_mcp.server tools --json --safe-only
-```
-
-前端代码可以单独构建，但当前不要把它当成可运行的 macOS 桌面版 / The frontend can be built separately, but this is not a working macOS desktop release:
-
-```bash
-npm ci --prefix apps/starbridge-desktop
-npm run build --prefix apps/starbridge-desktop
-```
-
-## 配置失败时先检查 / First Checks When Setup Fails
-
-| 检查 / Check | Windows | macOS |
-| --- | --- | --- |
-| Python | `python --version` | `python3 --version` |
-| Git | `git --version` | `git --version` |
-| Node（桌面/前端）/ Node (desktop/frontend) | `node --version` | `node --version` |
-| Codex 项目配置 / Codex project config | `.codex\config.toml` | `.codex/config.toml` |
-| 安全预检 / Safe preflight | `.\.venv\Scripts\python.exe scripts\starbridge_preflight.py --markdown` | `./.venv/bin/python scripts/starbridge_preflight.py --markdown` |
-
-不要把 Token、Cookie、Adobe 授权信息、客户素材或真实保存路径提交到 GitHub。
-
-> Never commit tokens, cookies, Adobe licensing information, customer assets, or real save paths to GitHub.
-
----
-
-## 仓库导航 / Repository Map
-
-| 路径 / Path | 用途 / Purpose |
-| --- | --- |
-| `.codex/skills/starbridge-*` | Codex Skills、安全边界和验证命令 / Codex Skills, safety boundaries, and verification commands |
-| `starbridge_mcp/` | MCP server、工具注册和安全层 / MCP server, tool registry, and safety layer |
-| `apps/starbridge-desktop/` | Tauri 2 + React 桌面端 / Tauri 2 + React desktop app |
-| `product/` | 机器可读产品事实 / Machine-readable product facts |
-| `examples/` | 默认安全的桥接示例 / Safe-by-default bridge examples |
-| `tests/` | 离线、集成和安全测试 / Offline, integration, and safety tests |
-| `docs/` | 架构、接入协议和能力边界 / Architecture, integration protocols, and capability boundaries |
-
-## 贡献与许可证 / Contributing and License
-
-提交代码前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md) 和 [SECURITY.md](SECURITY.md)。当前版本采用 [KORYAO 自有许可证](LICENSE)：Copyright © 2025–2026 菅宝瑞，保留所有权利；在适用法律允许的范围内，相关授权条款的最终解释权归菅宝瑞所有。历史版本仍适用其发布时随附的许可证。
-
-> Read [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md) before contributing. The current revision is released under the [KORYAO Proprietary License](LICENSE). Earlier revisions remain subject to the license terms distributed with those revisions.
+当前版本采用 [KORYAO Proprietary License](LICENSE)。Copyright © 2025–2026 菅宝瑞，保留所有权利。历史版本仍适用其发布时随附的许可证条款。
