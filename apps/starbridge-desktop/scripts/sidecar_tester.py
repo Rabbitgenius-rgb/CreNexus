@@ -47,8 +47,19 @@ PNG_1X1 = base64.b64decode(
 CSS_URL_PATTERN = re.compile(r"url\(\s*([^)]+?)\s*\)", re.IGNORECASE)
 PERCENT_ESCAPE_PATTERN = re.compile(r"%[0-9A-Fa-f]{2}")
 JSON_ESCAPED_SLASH_PATTERN = re.compile(r"\\+/")
-FORM_ENCODED_POSIX_PATH_TOKEN_PATTERN = re.compile(
-    r"%2[fF](?:(?:%[0-9A-Fa-f]{2})|[A-Za-z0-9._~+\-])*"
+FORM_ENCODED_ABSOLUTE_PATH_TOKEN_PATTERN = re.compile(
+    r"(?:"
+    r"%2[fF]"
+    r"|(?:[A-Za-z]|%(?:4[1-9A-Fa-f]|5[0-9Aa]|6[1-9A-Fa-f]|7[0-9Aa]))"
+    r"(?:"
+    r"%3[aA](?:%2[fF]|%5[cC]|[/\\])"
+    r"|:(?:%2[fF]|%5[cC])"
+    r")"
+    r"|(?:%5[cC]){2}"
+    r"|%5[cC]\\"
+    r"|\\%5[cC]"
+    r")"
+    r"(?:(?:%[0-9A-Fa-f]{2})|[A-Za-z0-9._~+\-/:\\])*"
 )
 MAX_PATH_PERCENT_DECODE_ROUNDS = 4
 
@@ -78,7 +89,7 @@ def _decode_path_text_layer(value: str) -> str:
     """Decode one layer, applying form semantics only to encoded absolute-path tokens."""
     decoded: list[str] = []
     previous_end = 0
-    for match in FORM_ENCODED_POSIX_PATH_TOKEN_PATTERN.finditer(value):
+    for match in FORM_ENCODED_ABSOLUTE_PATH_TOKEN_PATTERN.finditer(value):
         decoded.append(
             urllib.parse.unquote(
                 value[previous_end : match.start()],

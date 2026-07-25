@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import copy
 import json
 import os
@@ -34,6 +35,60 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
         path.write_bytes(
             b"\xcf\xfa\xed\xfe" + cpu_type.to_bytes(4, byteorder="little", signed=False)
         )
+
+    @staticmethod
+    def make_posix_wrapper_fixture(root: Path) -> Path:
+        scripts = root / "apps" / "starbridge-desktop" / "scripts"
+        runner = root / ".venv" / "bin" / "python"
+        scripts.mkdir(parents=True)
+        runner.parent.mkdir(parents=True)
+        runner.symlink_to(Path(sys.executable).resolve())
+        (root / "pyproject.toml").write_text("[project]\nname='fixture'\n", encoding="utf-8")
+        for name in (
+            "sidecar_builder.py",
+            "sidecar_launcher.py",
+            "sidecar_tester.py",
+            "Build-Sidecar.sh",
+            "Test-Sidecar.sh",
+        ):
+            destination = scripts / name
+            destination.write_bytes((SCRIPTS_DIR / name).read_bytes())
+            if destination.suffix == ".sh":
+                destination.chmod(0o755)
+        return scripts
+
+    @contextlib.contextmanager
+    def allow_windows_darwin_executable_fixture(self, executable: Path):
+        if os.name != "nt":
+            yield
+            return
+
+        real_lstat = os.lstat
+        real_access = os.access
+
+        def fixture_lstat(path: object, *args: object, **kwargs: object) -> os.stat_result:
+            metadata = real_lstat(path, *args, **kwargs)
+            if Path(path) == executable:
+                values = list(metadata)
+                values[0] |= stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+                return os.stat_result(values)
+            return metadata
+
+        def fixture_access(
+            path: object,
+            mode: int,
+            *args: object,
+            **kwargs: object,
+        ) -> bool:
+            if Path(path) == executable and mode & os.X_OK:
+                return True
+            return real_access(path, mode, *args, **kwargs)
+
+        with (
+            mock.patch.object(sidecar_builder.os, "lstat", side_effect=fixture_lstat),
+            mock.patch.object(sidecar_builder.os, "access", side_effect=fixture_access),
+        ):
+            yield
 
     def make_layout_fixture(self, root: Path) -> sidecar_builder.BuildLayout:
         scripts = root / "apps" / "starbridge-desktop" / "scripts"
@@ -215,11 +270,19 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
             sidecar_launcher.PIP_NETWORK_ENVIRONMENT_ALLOWLIST,
         )
         self.assertEqual(sidecar_builder.SANITIZED_PATH, sidecar_launcher.SANITIZED_PATH)
-        repository_runner, launcher_command = sidecar_launcher._launcher_command(
-            ["sidecar_launcher.py", "build", "--print-plan"]
-        )
-        self.assertEqual(REPO_ROOT / ".venv" / "bin" / "python", repository_runner)
-        self.assertEqual(os.fspath(repository_runner), launcher_command[0])
+        with tempfile.TemporaryDirectory(prefix="KORYAO trusted launcher fixture ") as temporary:
+            root = Path(temporary) / "repo"
+            scripts = self.make_posix_wrapper_fixture(root)
+            with mock.patch.object(
+                sidecar_launcher,
+                "__file__",
+                os.fspath(scripts / "sidecar_launcher.py"),
+            ):
+                repository_runner, launcher_command = sidecar_launcher._launcher_command(
+                    ["sidecar_launcher.py", "build", "--print-plan"]
+                )
+            self.assertEqual(root / ".venv" / "bin" / "python", repository_runner)
+            self.assertEqual(os.fspath(repository_runner), launcher_command[0])
         for name in ("Build-Sidecar.sh", "Test-Sidecar.sh"):
             path = SCRIPTS_DIR / name
             with self.subTest(path=path):
@@ -600,6 +663,7 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
     def test_wrapper_python_isolation_blocks_startup_injection(self) -> None:
         with tempfile.TemporaryDirectory(prefix="KORYAO sidecar python injection ") as temporary:
             root = Path(temporary)
+            scripts = self.make_posix_wrapper_fixture(root / "repo")
             attacker = root / "attacker"
             attacker.mkdir()
             trace = root / "sitecustomize.trace"
@@ -619,7 +683,7 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
 
             completed = subprocess.run(
                 [
-                    SCRIPTS_DIR / "Build-Sidecar.sh",
+                    scripts / "Build-Sidecar.sh",
                     "--print-plan",
                     "--target-triple",
                     "aarch64-apple-darwin",
@@ -944,7 +1008,11 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
                     self.assertEqual("/controlled/home", captured["HOME"])
                     self.assertEqual("/controlled/tmp", captured["TMPDIR"])
                     self.assertEqual("C", captured["LANG"])
-                    self.assertEqual("C", captured["LC_CTYPE"])
+                    self.assertIn(captured["LC_CTYPE"], {"C", "C.UTF-8"})
+                    self.assertEqual(
+                        "C",
+                        sidecar_launcher.sanitized_launcher_environment(environment)["LC_CTYPE"],
+                    )
                     self.assertEqual(
                         "http://proxy.invalid:8443",
                         captured["HTTPS_PROXY"],
@@ -1438,6 +1506,9 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
                     return subprocess.CompletedProcess(command, 0, stdout, "")
 
                 with (
+                    self.allow_windows_darwin_executable_fixture(
+                        layout.staged_executable
+                    ),
                     mock.patch.object(
                         sidecar_builder,
                         "_required_tool",
@@ -1519,6 +1590,9 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
                     return subprocess.CompletedProcess(command, 0, stdout, "")
 
                 with (
+                    self.allow_windows_darwin_executable_fixture(
+                        layout.staged_executable
+                    ),
                     mock.patch.object(
                         sidecar_builder,
                         "_required_tool",
@@ -1573,6 +1647,9 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
                 return subprocess.CompletedProcess(command, 0, stdout, "")
 
             with (
+                self.allow_windows_darwin_executable_fixture(
+                    layout.staged_executable
+                ),
                 mock.patch.object(
                     sidecar_builder,
                     "_required_tool",
@@ -1813,6 +1890,57 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
                 len(sidecar_tester._path_text_views(deeply_encoded)),
                 sidecar_tester.MAX_PATH_PERCENT_DECODE_ROUNDS + 1,
             )
+
+    def test_form_decoder_recognizes_windows_absolute_path_tokens_cross_platform(self) -> None:
+        raw_paths = (
+            r"C:\Users\<USER_HOME>\App Data\private+proof.png",
+            r"\\server\share\Private Data\private+proof.png",
+            "file:///C:/Users/<USER_HOME>/App Data/private+proof.png",
+        )
+        for raw in raw_paths:
+            encoded = sidecar_tester.urllib.parse.quote_plus(raw, safe="")
+            double_encoded = sidecar_tester.urllib.parse.quote(encoded, safe="")
+            encoded_drive = (
+                "%43" + encoded[1:]
+                if raw.startswith("C:")
+                else encoded
+            )
+            lowercase_encoded = sidecar_tester.PERCENT_ESCAPE_PATTERN.sub(
+                lambda match: match.group(0).lower(),
+                encoded,
+            )
+            for candidate in (
+                encoded,
+                double_encoded,
+                encoded_drive,
+                lowercase_encoded,
+            ):
+                with self.subTest(raw=raw, candidate=candidate):
+                    self.assertIn(raw, sidecar_tester._path_text_views(candidate))
+
+        partially_encoded = {
+            r"C:\Users\<USER_HOME>\Private Data": (
+                r"C:%5CUsers%5C%3CUSER_HOME%3E%5CPrivate+Data",
+                r"C%3A\Users\%3CUSER_HOME%3E\Private+Data",
+            ),
+            "file:///C:/Users/<USER_HOME>/Private Data": (
+                "file:%2F%2F/%43%3A/Users/%3CUSER_HOME%3E/Private+Data",
+            ),
+            r"\\server\share\Private Data": (
+                r"%5C\server\share\Private+Data",
+                r"\%5Cserver\share\Private+Data",
+            ),
+        }
+        for raw, candidates in partially_encoded.items():
+            for candidate in candidates:
+                with self.subTest(raw=raw, candidate=candidate):
+                    self.assertIn(raw, sidecar_tester._path_text_views(candidate))
+
+        harmless = "compiler=C%2B%2B+status"
+        self.assertNotIn(
+            "compiler=C++ status",
+            sidecar_tester._path_text_views(harmless),
+        )
 
     def test_output_audit_form_urlencoded_paths_preserve_real_plus(self) -> None:
         with tempfile.TemporaryDirectory(prefix="stage4-quote-plus-") as temporary:
@@ -2423,55 +2551,57 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
 
     @unittest.skipIf(os.name == "nt", "POSIX wrapper checks do not run on Windows")
     def test_arm_and_x86_plan_paths_preserve_argument_boundaries(self) -> None:
-        build_wrapper = SCRIPTS_DIR / "Build-Sidecar.sh"
-        test_wrapper = SCRIPTS_DIR / "Test-Sidecar.sh"
-        for target in ("aarch64-apple-darwin", "x86_64-apple-darwin"):
-            with self.subTest(target=target):
-                build = subprocess.run(
-                    [
-                        build_wrapper,
-                        "--print-plan",
-                        "--target-triple",
-                        target,
-                    ],
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                )
-                build_plan = json.loads(build.stdout)
-                self.assertEqual(target, build_plan["target_triple"])
-                self.assertEqual(
-                    f"src-tauri/binaries/starbridge-sidecar-{target}",
-                    build_plan["executable"],
-                )
-                self.assertEqual(
-                    f"src-tauri/binaries/_internal-{target}",
-                    build_plan["support_directory"],
-                )
-                self.assertEqual(
-                    f"build/sidecar/{target}/pyinstaller-config",
-                    build_plan["pyinstaller_config_root"],
-                )
+        with tempfile.TemporaryDirectory(prefix="KORYAO wrapper plans ") as temporary:
+            scripts = self.make_posix_wrapper_fixture(Path(temporary) / "repo")
+            build_wrapper = scripts / "Build-Sidecar.sh"
+            test_wrapper = scripts / "Test-Sidecar.sh"
+            for target in ("aarch64-apple-darwin", "x86_64-apple-darwin"):
+                with self.subTest(target=target):
+                    build = subprocess.run(
+                        [
+                            build_wrapper,
+                            "--print-plan",
+                            "--target-triple",
+                            target,
+                        ],
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                    )
+                    build_plan = json.loads(build.stdout)
+                    self.assertEqual(target, build_plan["target_triple"])
+                    self.assertEqual(
+                        f"src-tauri/binaries/starbridge-sidecar-{target}",
+                        build_plan["executable"],
+                    )
+                    self.assertEqual(
+                        f"src-tauri/binaries/_internal-{target}",
+                        build_plan["support_directory"],
+                    )
+                    self.assertEqual(
+                        f"build/sidecar/{target}/pyinstaller-config",
+                        build_plan["pyinstaller_config_root"],
+                    )
 
-                test = subprocess.run(
-                    [
-                        test_wrapper,
-                        "--print-plan",
-                        "--target-triple",
-                        target,
-                    ],
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                )
-                test_plan = json.loads(test.stdout)
-                self.assertEqual(build_plan["executable"], test_plan["executable"])
-                self.assertEqual(
-                    build_plan["support_directory"],
-                    test_plan["support_directory"],
-                )
+                    test = subprocess.run(
+                        [
+                            test_wrapper,
+                            "--print-plan",
+                            "--target-triple",
+                            target,
+                        ],
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                    )
+                    test_plan = json.loads(test.stdout)
+                    self.assertEqual(build_plan["executable"], test_plan["executable"])
+                    self.assertEqual(
+                        build_plan["support_directory"],
+                        test_plan["support_directory"],
+                    )
 
     @unittest.skipIf(os.name == "nt", "POSIX wrapper checks do not run on Windows")
     def test_unknown_arguments_invalid_ports_and_traversal_fail_closed(self) -> None:
