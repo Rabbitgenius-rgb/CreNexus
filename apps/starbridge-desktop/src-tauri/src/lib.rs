@@ -1419,11 +1419,8 @@ mod tests {
         std::fs::remove_file(&executable).expect("remove invalid executable");
         let external_executable = root.join("external-sidecar");
         std::fs::write(&external_executable, b"external").expect("external executable");
-        std::fs::set_permissions(
-            &external_executable,
-            std::fs::Permissions::from_mode(0o755),
-        )
-        .expect("external executable mode");
+        std::fs::set_permissions(&external_executable, std::fs::Permissions::from_mode(0o755))
+            .expect("external executable mode");
         symlink(&external_executable, &executable).expect("symlink executable");
         assert_eq!(
             validate_macos_arm64_sidecar_resources(&root),
