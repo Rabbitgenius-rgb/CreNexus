@@ -131,10 +131,8 @@ class TauriPlatformConfigTest(unittest.TestCase):
         self.assertNotIn("externalBin", bundle)
         self.assertEqual(
             {
-                "binaries/starbridge-sidecar-aarch64-apple-darwin":
-                    "starbridge-sidecar-aarch64-apple-darwin",
-                "binaries/_internal-aarch64-apple-darwin/":
-                    "_internal-aarch64-apple-darwin/",
+                "binaries/starbridge-sidecar-aarch64-apple-darwin": "starbridge-sidecar-aarch64-apple-darwin",
+                "binaries/_internal-aarch64-apple-darwin/": "_internal-aarch64-apple-darwin/",
             },
             bundle["resources"],
         )
