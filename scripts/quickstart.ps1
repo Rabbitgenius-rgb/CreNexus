@@ -175,9 +175,11 @@ if (-not $SkipNode) {
         }
         if ($effectiveProfile -in @("standard", "all")) {
             foreach ($proxyRoot in $proxyRoots) {
-                if (Test-Path -LiteralPath (Join-Path $proxyRoot "package.json")) {
+                $proxyPackage = Join-Path $proxyRoot "package.json"
+                $proxyLock = Join-Path $proxyRoot "package-lock.json"
+                if ((Test-Path -LiteralPath $proxyPackage) -and (Test-Path -LiteralPath $proxyLock)) {
                     Invoke-Checked $steps "install Node bridge $(Split-Path $proxyRoot -Leaf)" $npm.Source @(
-                        "install", "--prefix", $proxyRoot, "--no-package-lock", "--no-audit", "--no-fund"
+                        "ci", "--prefix", $proxyRoot, "--ignore-scripts", "--no-audit", "--no-fund"
                     )
                 }
             }

@@ -13,7 +13,7 @@ interface PhotoshopProductionPageProps {
 export function PhotoshopProductionPage({ client, runtimeReady, initialProjectId, onOpenJob }: PhotoshopProductionPageProps) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState(initialProjectId ?? "");
-  const [sourceAssetId, setSourceAssetId] = useState("");
+  const [sourceAssetIds, setSourceAssetIds] = useState<string[]>([]);
   const [resizeCanvas, setResizeCanvas] = useState(false);
   const [canvasWidth, setCanvasWidth] = useState(1920);
   const [canvasHeight, setCanvasHeight] = useState(1080);
@@ -47,10 +47,22 @@ export function PhotoshopProductionPage({ client, runtimeReady, initialProjectId
 
   useEffect(() => { void load(); }, [load]);
   useEffect(() => {
-    setSourceAssetId((current) => selectedProject?.sourceAssets.some((asset) => asset.assetId === current)
-      ? current
-      : selectedProject?.sourceAssets[0]?.assetId ?? "");
+    setSourceAssetIds((current) => {
+      const available = new Set(selectedProject?.sourceAssets.map((asset) => asset.assetId) ?? []);
+      const retained = current.filter((assetId) => available.has(assetId));
+      return retained.length > 0
+        ? retained
+        : selectedProject?.sourceAssets[0]
+          ? [selectedProject.sourceAssets[0].assetId]
+          : [];
+    });
   }, [selectedProject]);
+
+  const toggleAsset = (assetId: string, checked: boolean) => {
+    setSourceAssetIds((current) => checked
+      ? Array.from(new Set([...current, assetId])).slice(0, 32)
+      : current.filter((item) => item !== assetId));
+  };
 
   const toggleFormat = (format: string, checked: boolean) => {
     setFormats((current) => checked
@@ -59,14 +71,16 @@ export function PhotoshopProductionPage({ client, runtimeReady, initialProjectId
   };
 
   const createJob = async () => {
-    if (!projectId || !sourceAssetId || formats.length === 0) return;
+    if (!projectId || sourceAssetIds.length === 0 || formats.length === 0) return;
     setBusy(true);
     setError("");
     try {
       const job = await client.createCreativeJob({
         projectId,
         workflowId: "photoshop-production-v1",
-        sourceAssetId,
+        ...(sourceAssetIds.length === 1
+          ? { sourceAssetId: sourceAssetIds[0] }
+          : { sourceAssetIds }),
         outputFormats: formats,
         resizeCanvas,
         canvasWidth,
@@ -90,9 +104,10 @@ export function PhotoshopProductionPage({ client, runtimeReady, initialProjectId
       {error ? <div className="error-state" role="alert"><strong>操作未完成</strong><p>{error}</p></div> : null}
       <div className="workflow-builder-grid">
         <section className="record-panel">
-          <div className="section-heading"><div><span>项目素材</span><h3>选择明确导入的一张图片</h3></div></div>
-          <div className="form-grid"><label>Photoshop 项目<select value={projectId} onChange={(event) => setProjectId(event.target.value)}><option value="">请选择项目</option>{projects.map((project) => <option key={project.projectId} value={project.projectId}>{project.projectName}</option>)}</select></label><label>项目图片<select value={sourceAssetId} onChange={(event) => setSourceAssetId(event.target.value)}><option value="">请选择图片</option>{selectedProject?.sourceAssets.map((asset) => <option key={asset.assetId} value={asset.assetId}>{asset.basename}</option>)}</select></label></div>
-          <p className="truth-note">只读取项目安全目录里的托管副本；计划与证据不保存原始绝对路径、活动文档名或图层名。</p>
+          <div className="section-heading"><div><span>项目素材</span><h3>选择一张或多张已导入图片</h3></div><span className="state-label">{sourceAssetIds.length} 项</span></div>
+          <div className="form-grid"><label>Photoshop 项目<select value={projectId} onChange={(event) => setProjectId(event.target.value)}><option value="">请选择项目</option>{projects.map((project) => <option key={project.projectId} value={project.projectId}>{project.projectName}</option>)}</select></label></div>
+          <div className="format-checks" aria-label="Photoshop 批量素材">{selectedProject?.sourceAssets.map((asset) => <label key={asset.assetId} className="confirmation"><input type="checkbox" checked={sourceAssetIds.includes(asset.assetId)} onChange={(event) => toggleAsset(asset.assetId, event.target.checked)} />{asset.basename}</label>)}</div>
+          <p className="truth-note">按选择顺序在单个 Photoshop Host 中串行处理，最多 32 项；计划与证据不保存原始绝对路径、活动文档名或图层名。</p>
         </section>
         <section className="record-panel">
           <div className="section-heading"><div><span>固定处理</span><h3>画布与基础调色</h3></div></div>
@@ -103,7 +118,7 @@ export function PhotoshopProductionPage({ client, runtimeReady, initialProjectId
           <div className="section-heading"><div><span>真实交付</span><h3>只登记实际生成的格式</h3></div></div>
           <div className="format-checks"><label className="confirmation"><input type="checkbox" checked={formats.includes("png")} onChange={(event) => toggleFormat("png", event.target.checked)} />PNG 预览</label><label className="confirmation"><input type="checkbox" checked={formats.includes("jpeg")} onChange={(event) => toggleFormat("jpeg", event.target.checked)} />JPEG 预览</label><label className="confirmation"><input type="checkbox" checked={formats.includes("psd")} onChange={(event) => toggleFormat("psd", event.target.checked)} />PSD 副本</label><label className="confirmation"><input type="checkbox" checked={exportSubject} onChange={(event) => setExportSubject(event.target.checked)} />尝试选择主体并另存透明 PNG</label></div>
           <ol className="workflow-step-list"><li>只读探测 UXP 与活动文档。</li><li>任务详情页明确确认后创建沙箱副本。</li><li>导入项目图片并应用固定画布、亮度、对比度和饱和度参数。</li><li>先写应用拥有的临时文件，全部成功后再提升为交付文件。</li><li>计算 SHA-256，等待人工确认后进入交付中心。</li></ol>
-          <button type="button" className="primary" disabled={busy || !runtimeReady || !projectId || !sourceAssetId || formats.length === 0} onClick={() => void createJob()}>建立 Photoshop 任务计划</button>
+          <button type="button" className="primary" disabled={busy || !runtimeReady || !projectId || sourceAssetIds.length === 0 || formats.length === 0} onClick={() => void createJob()}>建立 Photoshop 任务计划</button>
         </section>
       </div>
     </div>

@@ -1,6 +1,8 @@
 import { Channel, invoke as tauriInvoke } from "@tauri-apps/api/core";
 
 import type {
+  AdobeBatchExportRequest,
+  AdobeBatchExportResult,
   AdobeExportReceipt,
   AdobeExportRequest,
   ApiEnvelope,
@@ -104,6 +106,15 @@ export class DesktopTransport implements KORYAOTransport {
     return this.call<AdobeExportReceipt | null>("export_adobe_file", {
       projectId: request.projectId,
       artifactRelativePath: request.artifactRelativePath,
+      format: request.format,
+      confirmExport: request.confirmExport,
+    });
+  }
+
+  exportAdobeBatch(request: AdobeBatchExportRequest): Promise<AdobeBatchExportResult | null> {
+    return this.call<AdobeBatchExportResult | null>("export_adobe_batch", {
+      projectId: request.projectId,
+      artifactRelativePaths: request.artifactRelativePaths,
       format: request.format,
       confirmExport: request.confirmExport,
     });

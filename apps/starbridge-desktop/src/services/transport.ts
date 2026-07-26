@@ -1,5 +1,7 @@
 import type {
   ApiEnvelope,
+  AdobeBatchExportRequest,
+  AdobeBatchExportResult,
   AdobeExportReceipt,
   AdobeExportRequest,
   CodexConnectionResetResult,
@@ -39,6 +41,7 @@ export interface KORYAOTransport {
   openLogsDirectory(): Promise<string>;
   openProjectArtifacts(projectId: string): Promise<string>;
   exportAdobeFile(request: AdobeExportRequest): Promise<AdobeExportReceipt | null>;
+  exportAdobeBatch(request: AdobeBatchExportRequest): Promise<AdobeBatchExportResult | null>;
   listAdobeExports(projectId: string): Promise<AdobeExportReceipt[]>;
   installCodexConnector(
     confirmInstall: boolean,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, replace
 from typing import Any
 from uuid import uuid4
@@ -64,11 +65,24 @@ class WorkflowEngine:
         if project.workflow_id != workflow_id:
             raise DomainValidationError("project workflowId does not match the requested workflow")
         plan = self.registry.create_plan(workflow_id, inputs)
+        idempotency_key = hashlib.sha256(
+            f"{project_id}:{workflow_id}:{plan.plan_hash}".encode()
+        ).hexdigest()
+        for existing in self.job_store.list():
+            if (
+                existing.project_id == project_id
+                and existing.workflow_id == workflow_id
+                and existing.idempotency_key == idempotency_key
+                and existing.status not in {"failed", "cancelled"}
+            ):
+                return existing
         job = CreativeJob(
             job_id=f"job-{uuid4().hex[:16]}",
             project_id=project_id,
             workflow_id=workflow_id,
             current_step=plan.steps[0].step_id,
+            idempotency_key=idempotency_key,
+            batch_item_id=f"item-{plan.plan_hash[:24]}",
         )
         self.job_store.save(job, create_only=True)
         self.job_store.save_plan(job.job_id, plan)
@@ -79,7 +93,12 @@ class WorkflowEngine:
                 status="queued",
                 step_id=job.current_step,
                 message="工作流计划已建立，尚未执行写入。",
-                details={"planId": plan.plan_id, "planHash": plan.plan_hash},
+                details={
+                    "planId": plan.plan_id,
+                    "planHash": plan.plan_hash,
+                    "idempotencyKey": idempotency_key,
+                    "batchItemId": job.batch_item_id,
+                },
             )
         )
         self.project_store.save(

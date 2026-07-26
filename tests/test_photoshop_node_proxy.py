@@ -79,6 +79,9 @@ class PhotoshopNodeProxyTests(unittest.TestCase):
         env = dict(os.environ)
         env["STARBRIDGE_PHOTOSHOP_PROXY_PORT"] = self.port
         env["STARBRIDGE_APP_DATA_DIR"] = str(self.app_data)
+        env["STARBRIDGE_PHOTOSHOP_PRODUCTION_TIMEOUT_MS"] = "250"
+        env["STARBRIDGE_PHOTOSHOP_STAGING_RETENTION_MS"] = "2000"
+        self.fake_uxp_process: subprocess.Popen[str] | None = None
         self.process = subprocess.Popen(
             ["node", str(SERVER_JS)],
             cwd=REPO_ROOT,
@@ -98,6 +101,17 @@ class PhotoshopNodeProxyTests(unittest.TestCase):
         self.fail(f"node proxy did not start\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}")
 
     def tearDown(self) -> None:
+        if self.fake_uxp_process is not None and self.fake_uxp_process.poll() is None:
+            self.fake_uxp_process.terminate()
+            try:
+                self.fake_uxp_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.fake_uxp_process.kill()
+        if self.fake_uxp_process is not None:
+            if self.fake_uxp_process.stdout:
+                self.fake_uxp_process.stdout.close()
+            if self.fake_uxp_process.stderr:
+                self.fake_uxp_process.stderr.close()
         if self.process.poll() is None:
             self.process.terminate()
             try:
@@ -109,6 +123,81 @@ class PhotoshopNodeProxyTests(unittest.TestCase):
         if self.process.stderr:
             self.process.stderr.close()
         self.temporary.cleanup()
+
+    def _start_fake_uxp(self) -> None:
+        helper = r"""
+import fs from "node:fs";
+import WebSocket from "ws";
+
+const socket = new WebSocket(process.argv[1]);
+let productionCount = 0;
+const pngBytes = Buffer.concat([
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+  Buffer.alloc(80),
+]);
+
+socket.on("open", () => {
+  socket.send(JSON.stringify({
+    type: "register",
+    photoshop_host: { app: "Photoshop", version: "test-host" },
+  }));
+});
+socket.on("message", (raw) => {
+  const message = JSON.parse(String(raw || "{}"));
+  if (message.type === "codex_session" || !message.method) return;
+  if (message.method !== "ps.production.execute_confirmed") {
+    socket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: message.id,
+      result: { ok: true, photoshop_host: { app: "Photoshop", version: "test-host" } },
+    }));
+    return;
+  }
+  productionCount += 1;
+  for (const outputPath of Object.values(message.params.staging_outputs || {})) {
+    fs.writeFileSync(outputPath, pngBytes);
+  }
+  const reply = () => socket.send(JSON.stringify({
+    jsonrpc: "2.0",
+    id: message.id,
+    result: {
+      ok: true,
+      executed: true,
+      sandbox_copy: true,
+      source_overwritten: false,
+      native_reopen_validated: false,
+      rollback_supported: true,
+      photoshop_host: { app: "Photoshop", version: "test-host" },
+    },
+  }));
+  if (productionCount === 1) setTimeout(reply, 700);
+  else reply();
+});
+setInterval(() => {}, 1000);
+"""
+        self.fake_uxp_process = subprocess.Popen(
+            [
+                "node",
+                "--input-type=module",
+                "--eval",
+                helper,
+                f"ws://127.0.0.1:{self.port}/uxp",
+            ],
+            cwd=NODE_PROXY_ROOT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            status = read_json(f"http://127.0.0.1:{self.port}/bridge/status")
+            if status["uxp_client_connected"]:
+                return
+            if self.fake_uxp_process.poll() is not None:
+                stdout, stderr = self.fake_uxp_process.communicate(timeout=2)
+                self.fail(f"fake UXP exited\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}")
+            time.sleep(0.05)
+        self.fail("fake UXP did not connect")
 
     def test_health_endpoint_reports_running(self) -> None:
         payload = read_json(f"http://127.0.0.1:{self.port}/health")
@@ -236,6 +325,23 @@ class PhotoshopNodeProxyTests(unittest.TestCase):
         )
         self.assertEqual(-32010, payload["error"]["code"])
 
+    def test_camera_raw_rejects_caller_supplied_descriptors(self) -> None:
+        payload = post_rpc(
+            self.port,
+            "ps.camera_raw.tune",
+            {
+                "dry_run": False,
+                "confirm_apply": True,
+                "descriptor_fixture_verified": True,
+                "descriptors": [{"_obj": "Adobe Camera Raw Filter"}],
+            },
+        )
+        self.assertEqual(-32602, payload["error"]["code"])
+        self.assertEqual(
+            "caller_supplied_camera_raw_descriptor_forbidden",
+            payload["error"]["message"],
+        )
+
     def _production_params(self) -> dict:
         return {
             "job_id": "job-test",
@@ -293,6 +399,109 @@ class PhotoshopNodeProxyTests(unittest.TestCase):
         self.assertEqual("uxp_client_not_connected", payload["error"]["message"])
         self.assertEqual([], list(self.artifact_dir.iterdir()))
 
+    def test_production_recovers_a_hash_verified_promotion_receipt_without_uxp(self) -> None:
+        params = self._production_params()
+        output = Path(params["outputs"]["png"])
+        output.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\0" * 80)
+        output_hash = sha256(output.read_bytes()).hexdigest()
+        recipe = json.dumps(
+            {
+                "canvas": params["canvas"],
+                "adjustment": params["adjustment"],
+                "export_subject": False,
+                "output_formats": ["png"],
+            },
+            separators=(",", ":"),
+        )
+        receipt = {
+            "schema_version": 1,
+            "job_id": "job-test",
+            "batch_item_id": None,
+            "source_sha256": params["source_sha256"],
+            "recipe_sha256": sha256(recipe.encode()).hexdigest(),
+            "sandbox_copy": True,
+            "native_reopen_validated": False,
+            "output_basenames": {"png": "photoshop-preview.png"},
+            "output_hashes": {"png": output_hash},
+        }
+        receipt_path = self.artifact_dir / ".photoshop-production-receipt.json"
+        receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+
+        payload = post_rpc(self.port, "ps.production.execute_confirmed", params)
+
+        self.assertTrue(payload["result"]["idempotent_replay"])
+        self.assertEqual(output_hash, payload["result"]["output_hashes"]["png"])
+        self.assertEqual("photoshop-preview.png", payload["result"]["output_basenames"]["png"])
+        self.assertNotIn(str(self.artifact_dir), json.dumps(payload))
+
+    def test_production_refuses_an_existing_output_without_a_valid_receipt(self) -> None:
+        params = self._production_params()
+        output = Path(params["outputs"]["png"])
+        output.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\0" * 80)
+
+        payload = post_rpc(self.port, "ps.production.execute_confirmed", params)
+
+        self.assertEqual(-32602, payload["error"]["code"])
+        self.assertEqual(
+            "outputs_outside_managed_artifacts_or_already_exist",
+            payload["error"]["message"],
+        )
+
+    def test_production_accepts_only_matching_deterministic_batch_item_names(self) -> None:
+        item_id = "item-" + "a" * 24
+        params = self._production_params()
+        params["batch_item_id"] = item_id
+        params["outputs"] = {"png": str(self.artifact_dir / f"{item_id}-photoshop-preview.png")}
+        payload = post_rpc(self.port, "ps.production.execute_confirmed", params)
+        self.assertEqual(-32001, payload["error"]["code"])
+
+        params["outputs"] = {"png": str(self.artifact_dir / "item-wrong-photoshop-preview.png")}
+        rejected = post_rpc(self.port, "ps.production.execute_confirmed", params)
+        self.assertEqual(-32602, rejected["error"]["code"])
+
+    def test_production_timeout_quarantines_host_and_late_reply_cannot_touch_retry(
+        self,
+    ) -> None:
+        self._start_fake_uxp()
+        params = self._production_params()
+
+        timed_out = post_rpc(
+            self.port,
+            "ps.production.execute_confirmed",
+            params,
+            request_id=101,
+        )
+        self.assertEqual(-32002, timed_out["error"]["code"])
+
+        quarantined = post_rpc(
+            self.port,
+            "ps.production.execute_confirmed",
+            params,
+            request_id=102,
+        )
+        self.assertEqual(-32003, quarantined["error"]["code"])
+        self.assertEqual("adobe_host_recovery_pending", quarantined["error"]["message"])
+
+        deadline = time.time() + 3
+        while time.time() < deadline:
+            events = read_json(f"http://127.0.0.1:{self.port}/events")["events"]
+            if any(event["type"] == "late_production_reply_cleaned" for event in events):
+                break
+            time.sleep(0.05)
+        else:
+            self.fail("late production reply was not isolated and cleaned")
+
+        completed = post_rpc(
+            self.port,
+            "ps.production.execute_confirmed",
+            params,
+            request_id=103,
+        )
+        self.assertTrue(completed["result"]["executed"])
+        self.assertEqual(1, completed["result"]["output_count"])
+        self.assertTrue(Path(params["outputs"]["png"]).is_file())
+        self.assertFalse(list(self.artifact_dir.glob("*.part.png")))
+
     def test_protocol_schema_lists_same_public_methods(self) -> None:
         schema = json.loads(
             (
@@ -332,6 +541,15 @@ class PhotoshopNodeProxyTests(unittest.TestCase):
             {"png", "jpeg", "psd", "subject"},
             set(schema["properties"]["params"]["properties"]["outputs"]["properties"]),
         )
+        camera_raw_rule = next(
+            rule
+            for rule in schema["allOf"]
+            if rule["if"]["properties"]["method"].get("const") == "ps.camera_raw.tune"
+        )
+        camera_raw_params = camera_raw_rule["then"]["properties"]["params"]
+        self.assertFalse(camera_raw_params["additionalProperties"])
+        self.assertNotIn("descriptor", camera_raw_params["properties"])
+        self.assertNotIn("descriptors", camera_raw_params["properties"])
 
     def test_uxp_bridge_declares_runtime_sandbox_guards(self) -> None:
         index_source = (REPO_ROOT / "uxp" / "photoshop-bridge" / "src" / "index.js").read_text(
@@ -347,6 +565,13 @@ class PhotoshopNodeProxyTests(unittest.TestCase):
         self.assertIn("productionExecuteConfirmed", index_source)
         self.assertIn("validateNativePsdReopen", index_source)
         self.assertIn("managed_source_verified", index_source)
+        production_source = index_source[
+            index_source.index("async function productionExecuteConfirmed") :
+        ]
+        self.assertLess(
+            production_source.index("closeDocumentWithoutSaving(sandboxDocument)"),
+            production_source.index("unregisterAutoCloseDocument(sandboxId)"),
+        )
 
     def test_uxp_bridge_has_in_app_codex_live_panel(self) -> None:
         plugin = REPO_ROOT / "uxp" / "photoshop-bridge"
@@ -361,13 +586,39 @@ class PhotoshopNodeProxyTests(unittest.TestCase):
         self.assertIn('message?.type === "codex_session"', client)
         self.assertIn("this.onSession(message)", client)
 
+    def test_camera_raw_recorder_is_local_explicit_and_unverified(self) -> None:
+        plugin = REPO_ROOT / "uxp" / "photoshop-bridge"
+        index_source = (plugin / "src" / "index.js").read_text(encoding="utf-8")
+        html = (plugin / "index.html").read_text(encoding="utf-8")
+
+        for element_id in (
+            "camera-raw-recorder-start",
+            "camera-raw-recorder-stop",
+            "camera-raw-recorder-output",
+        ):
+            self.assertIn(f'id="{element_id}"', html)
+        self.assertIn('action.addNotificationListener(["all"]', index_source)
+        self.assertIn('action.removeNotificationListener(["all"]', index_source)
+        self.assertIn('fixture_status: "captured_unverified"', index_source)
+        self.assertIn("review_required: true", index_source)
+        self.assertIn("CAMERA_RAW_PRIVATE_VALUE_PATTERN", index_source)
+        self.assertNotIn('"ps.camera_raw.record"', index_source)
+        self.assertIn("camera_raw_verified_export_not_connected", index_source)
+        self.assertNotIn("action.batchPlay(params.descriptors", index_source)
+        fixture_source = (plugin / "src" / "camera-raw-fixture.js").read_text(encoding="utf-8")
+        self.assertIn("compileReviewedCameraRawDescriptors", fixture_source)
+        self.assertIn("verified: false", fixture_source)
+        self.assertIn("Callers can never provide descriptors", fixture_source)
+
     def test_each_rpc_is_forwarded_to_uxp_exactly_once(self) -> None:
         server_source = SERVER_JS.read_text(encoding="utf-8")
 
         self.assertEqual(1, server_source.count("reply = await rpcToUxp(message)"))
+        self.assertIn("forwardRpcInHostOrder(message)", server_source)
+        self.assertIn("SERIALIZED_HOST_METHODS", server_source)
         self.assertLess(
             server_source.index('phase: "running"'),
-            server_source.index("reply = await rpcToUxp(message)"),
+            server_source.rindex("forwardRpcInHostOrder(message)"),
         )
 
 

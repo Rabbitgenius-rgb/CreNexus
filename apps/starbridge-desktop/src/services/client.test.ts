@@ -77,6 +77,7 @@ function transportReturning(status: number, body: Record<string, unknown>): KORY
     openVectorOutput: async () => ({ status: 200, body: { ok: true, data: { opened: true } } }),
     openProjectArtifacts: async () => "artifacts",
     exportAdobeFile: async () => null,
+    exportAdobeBatch: async () => null,
     listAdobeExports: async () => [],
   } as KORYAOTransport;
 }

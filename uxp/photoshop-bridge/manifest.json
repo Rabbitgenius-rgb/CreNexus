@@ -22,9 +22,9 @@
       "type": "panel",
       "id": "starbridgePhotoshopLivePanel",
       "label": {"default": "Codex Live"},
-      "minimumSize": {"width": 260, "height": 220},
-      "preferredDockedSize": {"width": 300, "height": 360},
-      "preferredFloatingSize": {"width": 340, "height": 400}
+      "minimumSize": {"width": 280, "height": 420},
+      "preferredDockedSize": {"width": 320, "height": 560},
+      "preferredFloatingSize": {"width": 360, "height": 620}
     },
     {
       "type": "command",

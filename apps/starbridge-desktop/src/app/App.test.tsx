@@ -42,6 +42,7 @@ function makeClient(status: RuntimeStatus | Promise<RuntimeStatus>): KORYAOClien
       .fn()
       .mockResolvedValue("<LOCAL_APP_DATA>/KORYAO/artifacts/project-test"),
     exportAdobeFile: vi.fn().mockResolvedValue(null),
+    exportAdobeBatch: vi.fn().mockResolvedValue(null),
     listAdobeExports: vi.fn().mockResolvedValue([]),
     getConnections: vi.fn().mockResolvedValue(PAIRED_CONNECTIONS),
     getModelRuntimeStatus: vi.fn().mockRejectedValue(new Error("model runtime offline")),

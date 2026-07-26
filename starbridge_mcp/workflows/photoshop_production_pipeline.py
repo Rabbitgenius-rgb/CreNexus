@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any
 
 from starbridge_mcp.adapters.local import LocalDeliveryAdapter, UserReviewAdapter
@@ -52,7 +54,138 @@ def _prepare_inputs(inputs: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _prepare_batch_inputs(inputs: dict[str, Any]) -> dict[str, Any]:
+    raw_assets = inputs.get("sourceAssets")
+    if not isinstance(raw_assets, list) or not 2 <= len(raw_assets) <= 32:
+        raise ValueError("sourceAssets must contain between 2 and 32 managed images")
+    items: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for raw_asset in raw_assets:
+        if not isinstance(raw_asset, dict):
+            raise ValueError("each sourceAssets item must be an object")
+        relative_path = validate_relative_path(str(raw_asset.get("relativePath") or ""))
+        sha256 = validate_sha256(str(raw_asset.get("sha256") or ""))
+        item_id = (
+            "item-"
+            + hashlib.sha256(
+                json.dumps(
+                    {"relativePath": relative_path, "sha256": sha256},
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode()
+            ).hexdigest()[:24]
+        )
+        if item_id in seen:
+            continue
+        seen.add(item_id)
+        items.append(
+            {
+                "itemId": item_id,
+                "sourceAssetRelativePath": relative_path,
+                "sourceAssetSha256": sha256,
+            }
+        )
+    if len(items) < 2:
+        raise ValueError("sourceAssets must contain at least two distinct managed images")
+    first = _prepare_inputs(
+        {
+            **inputs,
+            "sourceAssetRelativePath": items[0]["sourceAssetRelativePath"],
+            "sourceAssetSha256": items[0]["sourceAssetSha256"],
+        }
+    )
+    return {**first, "items": tuple(items)}
+
+
+def _create_photoshop_batch_plan(inputs: dict[str, Any]) -> WorkflowPlan:
+    prepared = _prepare_batch_inputs(inputs)
+    first = prepared["items"][0]
+    session_common = {
+        "sourceAssetRelativePath": first["sourceAssetRelativePath"],
+        "sourceAssetSha256": first["sourceAssetSha256"],
+    }
+    batch_common = {
+        "items": list(prepared["items"]),
+        "outputFormats": list(prepared["outputFormats"]),
+        "canvas": prepared["canvas"],
+        "adjustment": prepared["adjustment"],
+        "exportSubject": prepared["exportSubject"],
+    }
+    return build_workflow_plan(
+        WORKFLOW_ID,
+        (
+            WorkflowStep(
+                step_id="validate-batch",
+                adapter="photoshop-production",
+                input_data={**batch_common, "operation": "validate-batch"},
+                validation=(
+                    "managed-project-sources",
+                    "source-hashes",
+                    "deterministic-item-ids",
+                ),
+            ),
+            WorkflowStep(
+                step_id="probe-photoshop",
+                adapter="photoshop-production",
+                input_data={**session_common, "operation": "probe-session"},
+                validation=("loopback-proxy", "uxp-connected", "licensed-host-only"),
+            ),
+            WorkflowStep(
+                step_id="inspect-session",
+                adapter="photoshop-production",
+                input_data={**session_common, "operation": "inspect-session"},
+                validation=("host-session", "optional-active-document", "redacted-session-summary"),
+            ),
+            WorkflowStep(
+                step_id="execute-batch",
+                adapter="photoshop-production",
+                input_data={**batch_common, "operation": "execute-batch"},
+                validation=(
+                    "single-host-fifo",
+                    "duplicate-before-write",
+                    "per-item-checkpoint",
+                    "continue-after-item-failure",
+                    "safe-artifact-root",
+                    "no-source-overwrite",
+                ),
+                requires_confirmation=True,
+                retry_policy={"maxAttempts": 1},
+                rollback_policy={
+                    "enabled": True,
+                    "closeSandboxOnFailure": True,
+                    "cleanupAppOwnedStagingOnly": True,
+                },
+            ),
+            WorkflowStep(
+                step_id="verify-batch",
+                adapter="photoshop-production",
+                input_data={**batch_common, "operation": "verify-batch"},
+                validation=(
+                    "actual-files",
+                    "per-item-sha256",
+                    "native-reopen-if-psd-requested",
+                ),
+            ),
+            WorkflowStep(
+                step_id="review-result",
+                adapter="user-review",
+                input_data={"review": "photoshop-batch-output"},
+                requires_confirmation=True,
+                rollback_policy={"enabled": False, "preserveArtifacts": True},
+            ),
+            WorkflowStep(
+                step_id="collect-delivery",
+                adapter="local-delivery",
+                input_data={"formats": "from-existing-artifacts-only"},
+                validation=("no-fabricated-format", "redacted-evidence"),
+            ),
+        ),
+    )
+
+
 def create_photoshop_production_plan(inputs: dict[str, Any]) -> WorkflowPlan:
+    if isinstance(inputs.get("sourceAssets"), list) and len(inputs["sourceAssets"]) > 1:
+        return _create_photoshop_batch_plan(inputs)
     prepared = _prepare_inputs(inputs)
     common = {
         "sourceAssetRelativePath": prepared["sourceAssetRelativePath"],
@@ -77,7 +210,7 @@ def create_photoshop_production_plan(inputs: dict[str, Any]) -> WorkflowPlan:
                 step_id="inspect-session",
                 adapter="photoshop-production",
                 input_data={**common, "operation": "inspect-session"},
-                validation=("active-document", "redacted-session-summary"),
+                validation=("host-session", "optional-active-document", "redacted-session-summary"),
             ),
             WorkflowStep(
                 step_id="execute-production",
@@ -108,7 +241,14 @@ def create_photoshop_production_plan(inputs: dict[str, Any]) -> WorkflowPlan:
             WorkflowStep(
                 step_id="verify-output",
                 adapter="photoshop-production",
-                input_data={**common, "operation": "verify-output"},
+                input_data={
+                    **common,
+                    "operation": "verify-output",
+                    "outputFormats": list(prepared["outputFormats"]),
+                    "canvas": prepared["canvas"],
+                    "adjustment": prepared["adjustment"],
+                    "exportSubject": prepared["exportSubject"],
+                },
                 validation=("actual-file", "sha256", "no-private-document-metadata"),
             ),
             WorkflowStep(

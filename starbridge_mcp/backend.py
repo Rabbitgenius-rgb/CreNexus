@@ -1002,25 +1002,40 @@ class KORYAOBackend:
                 }
             elif workflow_id == PHOTOSHOP_PRODUCTION_WORKFLOW_ID:
                 asset_id = body.get("sourceAssetId") or body.get("source_asset_id")
+                asset_ids = body.get("sourceAssetIds") or body.get("source_asset_ids")
                 parameters = body.get("parameters") or {}
-                if not isinstance(asset_id, str):
+                if asset_ids is not None and (
+                    not isinstance(asset_ids, list)
+                    or not 1 <= len(asset_ids) <= 32
+                    or any(not isinstance(item, str) for item in asset_ids)
+                ):
+                    return self._error(
+                        400,
+                        "source_assets_invalid",
+                        "Photoshop 批量需要选择 1 到 32 个已导入素材。",
+                    )
+                requested_asset_ids = list(asset_ids) if isinstance(asset_ids, list) else [asset_id]
+                if any(not isinstance(item, str) for item in requested_asset_ids):
                     return self._error(
                         400, "source_asset_required", "Photoshop 工作流需要一个已导入的源素材。"
                     )
+                if len(set(requested_asset_ids)) != len(requested_asset_ids):
+                    return self._error(
+                        400, "source_assets_duplicated", "Photoshop 批量中不能重复选择同一素材。"
+                    )
                 if not isinstance(parameters, dict):
                     return self._error(400, "invalid_parameters", "任务参数格式无效。")
-                source_asset = next(
-                    (asset for asset in project.source_assets if asset.asset_id == asset_id), None
-                )
-                if source_asset is None:
+                assets_by_id = {asset.asset_id: asset for asset in project.source_assets}
+                selected_assets = [
+                    assets_by_id[item] for item in requested_asset_ids if item in assets_by_id
+                ]
+                if len(selected_assets) != len(requested_asset_ids):
                     return self._error(404, "source_asset_not_found", "项目中没有这个源素材。")
 
                 def photoshop_value(key: str, default: Any = None) -> Any:
                     return body.get(key) if key in body else parameters.get(key, default)
 
-                workflow_inputs = {
-                    "sourceAssetRelativePath": source_asset.relative_path,
-                    "sourceAssetSha256": source_asset.sha256,
+                common_inputs = {
                     "outputFormats": photoshop_value("outputFormats", ["png", "jpeg", "psd"]),
                     "resizeCanvas": photoshop_value("resizeCanvas", False),
                     "canvasWidth": photoshop_value("canvasWidth", 1920),
@@ -1030,6 +1045,21 @@ class KORYAOBackend:
                     "saturation": photoshop_value("saturation", 0),
                     "exportSubject": photoshop_value("exportSubject", False),
                 }
+                if len(selected_assets) > 1:
+                    workflow_inputs = {
+                        **common_inputs,
+                        "sourceAssets": [
+                            {"relativePath": asset.relative_path, "sha256": asset.sha256}
+                            for asset in selected_assets
+                        ],
+                    }
+                else:
+                    source_asset = selected_assets[0]
+                    workflow_inputs = {
+                        **common_inputs,
+                        "sourceAssetRelativePath": source_asset.relative_path,
+                        "sourceAssetSha256": source_asset.sha256,
+                    }
             else:
                 return self._error(400, "workflow_not_available", "这个工作流当前不可用。")
             job = self.workflow_engine.create_job(

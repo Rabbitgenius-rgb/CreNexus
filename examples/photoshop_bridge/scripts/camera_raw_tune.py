@@ -61,7 +61,6 @@ def build_arguments(args: argparse.Namespace) -> dict[str, Any]:
         "confirm_apply": args.confirm_apply,
         "confirm_export": args.confirm_export,
         "preset": args.preset,
-        "descriptor_fixture_path": args.descriptor_fixture_path,
         "source": source,
         "output": {
             "dir": args.output_dir,
@@ -121,10 +120,6 @@ def parse_args() -> argparse.Namespace:
         "--source-mode", choices=["active_document", "explicit_path"], default="active_document"
     )
     parser.add_argument("--preset", default="blue_artwork_clean", choices=["blue_artwork_clean"])
-    parser.add_argument(
-        "--descriptor-fixture-path",
-        help="Optional local verified Camera Raw BatchPlay descriptor fixture JSON.",
-    )
     parser.add_argument("--output-dir", default=SAFE_OUTPUT_DIR)
     parser.add_argument("--basename", default="camera_raw_tune_preview")
     parser.add_argument("--formats", nargs="+", default=["jpg"], choices=["jpg", "png"])

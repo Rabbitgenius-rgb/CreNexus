@@ -53,6 +53,11 @@ describe("Adobe delivery export", () => {
       sha256: "b".repeat(64),
       createdAtUnixSeconds: 1784678400,
       nativeReopenValidated: true,
+      saveCompletionValidated: true,
+      artboardCount: 1,
+      pageItemCount: 12,
+      stableSizeSamples: 3,
+      recoveryAttempts: 0,
       sourceOverwritten: false,
       targetPathPersisted: false,
       historyRecorded: true,
@@ -66,6 +71,11 @@ describe("Adobe delivery export", () => {
       sha256: "c".repeat(64),
       createdAtUnixSeconds: 1784592000,
       nativeReopenValidated: true,
+      saveCompletionValidated: true,
+      artboardCount: 0,
+      pageItemCount: 1,
+      stableSizeSamples: 3,
+      recoveryAttempts: 0,
       sourceOverwritten: false,
       targetPathPersisted: false,
       historyRecorded: true,
@@ -79,13 +89,13 @@ describe("Adobe delivery export", () => {
     } as unknown as KORYAOClient;
 
     render(<DeliveryPage client={client} initialProjectId="project-test" nativeAdobeExport />);
-    await screen.findByRole("option", { name: /vector\.svg/ });
+    await screen.findByRole("checkbox", { name: /vector\.svg/ });
     expect(await screen.findByText("historical.psd")).toBeInTheDocument();
     expect(listAdobeExports).toHaveBeenCalledWith("project-test");
     expect(screen.queryByText(/C:\\/)).not.toBeInTheDocument();
     const exportButton = screen.getByRole("button", { name: "选择路径并导出 .ai" });
     expect(exportButton).toBeDisabled();
-    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(screen.getAllByRole("checkbox")[1]);
     fireEvent.click(exportButton);
 
     await waitFor(() => expect(exportAdobeFile).toHaveBeenCalledWith({
@@ -117,13 +127,13 @@ describe("Adobe delivery export", () => {
         nativeAdobeExport={false}
       />,
     );
-    await screen.findByRole("option", { name: /vector\.svg/ });
+    await screen.findByRole("checkbox", { name: /vector\.svg/ });
 
     expect(screen.getByText(/当前平台运行时不支持/)).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "当前平台原生 Adobe 导出未启用" }),
     ).toBeDisabled();
-    expect(screen.getByRole("checkbox")).toBeDisabled();
+    expect(screen.getAllByRole("checkbox").every((checkbox) => checkbox.hasAttribute("disabled"))).toBe(true);
     expect(exportAdobeFile).not.toHaveBeenCalled();
     expect(client.listAdobeExports).not.toHaveBeenCalled();
   });

@@ -56,11 +56,16 @@ jobs:
         uses: actions/setup-node@v7
         with:
           node-version: "22"
+          cache: npm
+          cache-dependency-path: node_proxy/photoshop-bridge/package-lock.json
 
       - name: Install Python dev deps
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
+
+      - name: Install Photoshop Node Proxy dependencies from lockfile
+        run: npm ci --prefix node_proxy/photoshop-bridge --ignore-scripts --no-audit --no-fund
 
       - name: Verify configs
         run: |
@@ -114,11 +119,16 @@ jobs:
         uses: actions/setup-node@v7
         with:
           node-version: "22"
+          cache: npm
+          cache-dependency-path: node_proxy/photoshop-bridge/package-lock.json
 
       - name: Install Python dev deps
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
+
+      - name: Install Photoshop Node Proxy dependencies from lockfile
+        run: npm.cmd ci --prefix node_proxy/photoshop-bridge --ignore-scripts --no-audit --no-fund
 
       - name: Run security check (Windows)
         run: |
@@ -256,11 +266,21 @@ jobs:
           python-version: "3.12"
           cache: "pip"
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: node_proxy/photoshop-bridge/package-lock.json
+
       - name: Create controlled repository Python environment
         run: |
           python -m venv .venv
           .venv/bin/python -m pip install --upgrade pip
           .venv/bin/python -m pip install -e ".[dev]"
+
+      - name: Install Photoshop Node Proxy dependencies from lockfile
+        run: npm ci --prefix node_proxy/photoshop-bridge --ignore-scripts --no-audit --no-fund
 
       - name: Compile Python files
         run: .venv/bin/python -m compileall -q starbridge_mcp scripts examples tests

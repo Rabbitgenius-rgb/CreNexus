@@ -341,12 +341,15 @@ export interface CreativeJob {
   warnings: string[];
   error?: CreativeJobError | null;
   evidenceId?: string | null;
+  idempotencyKey?: string | null;
+  batchItemId?: string | null;
 }
 
 export interface CreativeJobCreateRequest {
   projectId: string;
   workflowId: string;
   sourceAssetId?: string;
+  sourceAssetIds?: string[];
   drawingMode?: VectorMode;
   parameters?: Record<string, unknown>;
   prompt?: string;
@@ -441,6 +444,13 @@ export interface AdobeExportRequest {
   confirmExport: boolean;
 }
 
+export interface AdobeBatchExportRequest {
+  projectId: string;
+  artifactRelativePaths: string[];
+  format: AdobeExportFormat;
+  confirmExport: boolean;
+}
+
 export interface AdobeExportReceipt {
   receiptId: string;
   format: AdobeExportFormat;
@@ -450,9 +460,24 @@ export interface AdobeExportReceipt {
   sha256: string;
   createdAtUnixSeconds: number;
   nativeReopenValidated: true;
+  saveCompletionValidated: boolean;
+  artboardCount: number;
+  pageItemCount: number;
+  stableSizeSamples: number;
+  recoveryAttempts: number;
   sourceOverwritten: false;
   targetPathPersisted: false;
   historyRecorded: boolean;
+}
+
+export interface AdobeBatchExportResult {
+  batchId: string;
+  itemCount: number;
+  completedCount: number;
+  failedCount: number;
+  needsUser: boolean;
+  resumed: boolean;
+  receipts: AdobeExportReceipt[];
 }
 
 export interface ApiErrorShape {

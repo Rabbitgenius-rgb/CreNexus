@@ -63,6 +63,36 @@ function Assert-PathWithinDesktop {
 Assert-PathWithinDesktop -Path $buildRoot
 Assert-PathWithinDesktop -Path $binariesRoot
 
+function Get-Vector60Runtime {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Executable,
+        [ValidateRange(1, 5)]
+        [int]$Attempts = 3
+    )
+
+    for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
+        $raw = (& $Executable --vector60-runtime-check 2>$null | Out-String).Trim()
+        $exitCode = $LASTEXITCODE
+        if ($exitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace($raw)) {
+            try {
+                $runtime = $raw | ConvertFrom-Json -ErrorAction Stop
+                if ($runtime.ok) {
+                    return $runtime
+                }
+            }
+            catch {
+                # A freshly built one-folder executable can be temporarily
+                # unavailable while Windows finishes scanning its support files.
+            }
+        }
+        if ($attempt -lt $Attempts) {
+            Start-Sleep -Milliseconds (500 * $attempt)
+        }
+    }
+    return $null
+}
+
 if (-not (Test-Path -LiteralPath $buildPython -PathType Leaf)) {
     $python = Get-Command python -ErrorAction SilentlyContinue
     if (-not $python) {
@@ -112,8 +142,8 @@ if (-not (Test-Path -LiteralPath $sourceExecutable -PathType Leaf)) {
     throw "Expected sidecar executable was not found after PyInstaller completed."
 }
 
-$vector60Runtime = (& $sourceExecutable --vector60-runtime-check | Out-String).Trim() | ConvertFrom-Json
-if ($LASTEXITCODE -ne 0 -or -not $vector60Runtime.ok) {
+$vector60Runtime = Get-Vector60Runtime -Executable $sourceExecutable
+if (-not $vector60Runtime) {
     throw "The packaged sidecar failed its Vector60 Python runtime check."
 }
 if ($vector60Runtime.versions.vtracer -ne "0.6.15" -or

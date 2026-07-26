@@ -836,25 +836,30 @@ async fn import_project_asset(
     let selected = tauri::async_runtime::spawn_blocking(|| {
         rfd::FileDialog::new()
             .add_filter("图片", &["png", "jpg", "jpeg"])
-            .set_title("选择一张要导入项目的图片")
-            .pick_file()
+            .set_title("选择一张或多张要导入项目的图片")
+            .pick_files()
     })
     .await
     .map_err(|_| "无法打开文件选择窗口；请重新尝试。".to_string())?;
-    let Some(path) = selected else {
+    let Some(paths) = selected else {
         return Ok(None);
     };
-    let response = call_backend_json(
-        &manager,
-        "POST",
-        &format!("/api/projects/{project_id}/assets"),
-        Some(serde_json::json!({
-            "inputPath": path.to_string_lossy(),
-            "confirmImport": true
-        })),
-    )
-    .await?;
-    Ok(Some(response))
+    let mut response = None;
+    for path in paths {
+        response = Some(
+            call_backend_json(
+                &manager,
+                "POST",
+                &format!("/api/projects/{project_id}/assets"),
+                Some(serde_json::json!({
+                    "inputPath": path.to_string_lossy(),
+                    "confirmImport": true
+                })),
+            )
+            .await?,
+        );
+    }
+    Ok(response)
 }
 
 #[tauri::command]
@@ -962,10 +967,7 @@ async fn request_graceful_stop(manager: &BackendManager) {
     let connection = {
         let mut inner = manager.lock();
         inner.desired_stop = true;
-        inner
-            .port
-            .zip(inner.session_credential.clone())
-            .map(|(port, credential)| (port, credential))
+        inner.port.zip(inner.session_credential.clone())
     };
     if let Some((port, session_credential)) = connection {
         if let Ok(client) = loopback_client() {
@@ -1156,6 +1158,7 @@ pub fn run() {
             open_vector_output,
             open_project_artifacts,
             adobe_export::export_adobe_file,
+            adobe_export::export_adobe_batch,
             adobe_export::list_adobe_exports,
             restart_backend,
             open_logs_directory,

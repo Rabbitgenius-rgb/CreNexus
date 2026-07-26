@@ -17,6 +17,18 @@ const PORT = Number(process.env.STARBRIDGE_PHOTOSHOP_PROXY_PORT || 8971);
 const MAX_RPC_BYTES = 256 * 1024;
 const MAX_SOURCE_ASSET_BYTES = 512 * 1024 * 1024;
 const MAX_SESSION_BYTES = 32 * 1024;
+const PRODUCTION_RPC_TIMEOUT_MS = boundedRuntimeMilliseconds(
+  process.env.STARBRIDGE_PHOTOSHOP_PRODUCTION_TIMEOUT_MS,
+  55_000,
+  100,
+  120_000,
+);
+const PRODUCTION_STAGING_RETENTION_MS = boundedRuntimeMilliseconds(
+  process.env.STARBRIDGE_PHOTOSHOP_STAGING_RETENTION_MS,
+  5 * 60_000,
+  1_000,
+  10 * 60_000,
+);
 const PROXY_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(PROXY_DIR, "../..");
 const APP_DATA_CONFIGURED = process.env.STARBRIDGE_APP_DATA_DIR ||
@@ -52,6 +64,7 @@ const PRODUCTION_OUTPUT_BASENAMES = new Map([
   ["psd", "photoshop-copy.psd"],
   ["subject", "photoshop-subject.png"],
 ]);
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const state = {
   node_proxy_running: true,
   uxp_client_connected: false,
@@ -70,6 +83,12 @@ let currentClient = null;
 const liveSession = createLiveSessionStore("photoshop", (update) => {
   if (currentClient?.readyState === 1) currentClient.send(JSON.stringify(update));
 });
+
+function boundedRuntimeMilliseconds(rawValue, fallback, minimum, maximum) {
+  const parsed = Number(rawValue);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(minimum, Math.min(maximum, Math.trunc(parsed)));
+}
 
 function recordEvent(type, details = {}) {
   const event = {
@@ -139,6 +158,33 @@ function fileSha256(filePath) {
   return crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
 }
 
+function productionFileLooksValid(key, filePath) {
+  let descriptor = null;
+  try {
+    const stats = fs.statSync(filePath);
+    if (!stats.isFile() || stats.size < 64) return false;
+    descriptor = fs.openSync(filePath, "r");
+    const header = Buffer.alloc(8);
+    const bytesRead = fs.readSync(descriptor, header, 0, header.length, 0);
+    fs.closeSync(descriptor);
+    descriptor = null;
+    const exactHeader = header.subarray(0, bytesRead);
+    if (key === "psd") return exactHeader.subarray(0, 4).equals(Buffer.from("8BPS"));
+    if (key === "png" || key === "subject") return exactHeader.equals(PNG_SIGNATURE);
+    if (key === "jpeg") {
+      return exactHeader.length >= 3 &&
+        exactHeader[0] === 0xff &&
+        exactHeader[1] === 0xd8 &&
+        exactHeader[2] === 0xff;
+    }
+    return false;
+  } catch (_error) {
+    return false;
+  } finally {
+    if (descriptor !== null) fs.closeSync(descriptor);
+  }
+}
+
 function canonicalExistingPathInside(rawPath, root) {
   if (!root) return null;
   try {
@@ -176,25 +222,163 @@ function normalizeManagedSource(rawPath, expectedHash) {
   return candidate;
 }
 
-function normalizeProductionOutputs(rawOutputs, jobId) {
+function productionItemPrefix(batchItemId) {
+  if (batchItemId === undefined || batchItemId === null || batchItemId === "") return "";
+  return /^item-[0-9a-f]{24}$/.test(String(batchItemId)) ? `${batchItemId}-` : null;
+}
+
+function productionReceiptPath(finalOutputs, itemPrefix) {
+  const directories = new Set(
+    Object.values(finalOutputs).map((candidate) => path.dirname(candidate)),
+  );
+  if (directories.size !== 1) return null;
+  return path.join(
+    [...directories][0],
+    `.${itemPrefix}photoshop-production-receipt.json`,
+  );
+}
+
+function writeJsonAtomic(target, payload) {
+  const temporary = `${target}.${crypto.randomBytes(8).toString("hex")}.tmp`;
+  let descriptor = null;
+  try {
+    descriptor = fs.openSync(temporary, "wx");
+    fs.writeFileSync(descriptor, `${JSON.stringify(payload, null, 2)}\n`, "utf-8");
+    fs.fsyncSync(descriptor);
+    fs.closeSync(descriptor);
+    descriptor = null;
+    fs.renameSync(temporary, target);
+  } finally {
+    if (descriptor !== null) fs.closeSync(descriptor);
+    fs.rmSync(temporary, { force: true });
+  }
+}
+
+function productionRecipeHash(params, outputKeys) {
+  return crypto
+    .createHash("sha256")
+    .update(JSON.stringify({
+      canvas: params.canvas || {},
+      adjustment: params.adjustment || {},
+      export_subject: Boolean(params.export_subject),
+      output_formats: [...outputKeys].sort(),
+    }))
+    .digest("hex");
+}
+
+function recoverProductionOutputs(
+  rawOutputs,
+  jobId,
+  batchItemId,
+  sourceSha256,
+  recipeSha256,
+) {
   if (!APP_ARTIFACTS_ROOT) return null;
   if (!rawOutputs || typeof rawOutputs !== "object" || Array.isArray(rawOutputs)) return null;
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$/.test(String(jobId || ""))) return null;
+  if (!/^[0-9a-f]{64}$/.test(String(sourceSha256 || ""))) return null;
+  const itemPrefix = productionItemPrefix(batchItemId);
+  if (itemPrefix === null) return null;
+  const keys = Object.keys(rawOutputs);
+  if (
+    keys.length < 1 ||
+    keys.length > PRODUCTION_OUTPUT_EXTENSIONS.size ||
+    keys.some((key) => !PRODUCTION_OUTPUT_EXTENSIONS.has(key))
+  ) return null;
+  const finalOutputs = {};
+  const canonicalArtifactsRoot = fs.realpathSync(APP_ARTIFACTS_ROOT);
+  for (const key of keys) {
+    const rawCandidate = String(rawOutputs[key] || "");
+    const expectedExtension = PRODUCTION_OUTPUT_EXTENSIONS.get(key);
+    const expectedBasename = `${itemPrefix}${PRODUCTION_OUTPUT_BASENAMES.get(key)}`;
+    if (
+      !path.isAbsolute(rawCandidate) ||
+      path.extname(rawCandidate).toLowerCase() !== expectedExtension ||
+      path.basename(rawCandidate) !== expectedBasename
+    ) return null;
+    const candidate = canonicalExistingPathInside(rawCandidate, APP_ARTIFACTS_ROOT);
+    if (!candidate || !productionFileLooksValid(key, candidate)) return null;
+    const relativeParts = path.relative(canonicalArtifactsRoot, candidate).split(path.sep);
+    if (relativeParts.length !== 3 || relativeParts[1] !== jobId) return null;
+    finalOutputs[key] = candidate;
+  }
+  const receiptPath = productionReceiptPath(finalOutputs, itemPrefix);
+  const canonicalReceipt = receiptPath
+    ? canonicalExistingPathInside(receiptPath, APP_ARTIFACTS_ROOT)
+    : null;
+  if (!canonicalReceipt) return null;
+  let receipt;
+  try {
+    receipt = JSON.parse(fs.readFileSync(canonicalReceipt, "utf-8"));
+  } catch (_error) {
+    return null;
+  }
+  if (
+    receipt?.schema_version !== 1 ||
+    receipt?.job_id !== jobId ||
+    (receipt?.batch_item_id || null) !== (batchItemId || null) ||
+    receipt?.source_sha256 !== sourceSha256 ||
+    receipt?.recipe_sha256 !== recipeSha256 ||
+    (keys.includes("psd") && (
+      receipt?.native_reopen_validated !== true ||
+      Number(receipt?.native_reopen_width || 0) < 1 ||
+      Number(receipt?.native_reopen_height || 0) < 1 ||
+      Number(receipt?.native_reopen_layer_count || 0) < 1
+    ))
+  ) return null;
+  const outputHashes = {};
+  const outputBasenames = {};
+  for (const key of keys) {
+    const actualHash = fileSha256(finalOutputs[key]);
+    if (receipt?.output_hashes?.[key] !== actualHash) return null;
+    if (receipt?.output_basenames?.[key] !== path.basename(finalOutputs[key])) return null;
+    outputHashes[key] = actualHash;
+    outputBasenames[key] = path.basename(finalOutputs[key]);
+  }
+  return {
+    ok: true,
+    success: true,
+    executed: true,
+    idempotent_replay: true,
+    sandbox_copy: receipt.sandbox_copy === true,
+    source_overwritten: false,
+    native_reopen_validated: receipt.native_reopen_validated === true,
+    native_reopen_width: Number(receipt.native_reopen_width || 0),
+    native_reopen_height: Number(receipt.native_reopen_height || 0),
+    native_reopen_layer_count: Number(receipt.native_reopen_layer_count || 0),
+    rollback_supported: true,
+    output_basenames: outputBasenames,
+    output_hashes: outputHashes,
+    output_count: keys.length,
+    warnings: [],
+  };
+}
+
+function normalizeProductionOutputs(rawOutputs, jobId, batchItemId) {
+  if (!APP_ARTIFACTS_ROOT) return null;
+  if (!rawOutputs || typeof rawOutputs !== "object" || Array.isArray(rawOutputs)) return null;
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$/.test(String(jobId || ""))) return null;
+  const itemPrefix = productionItemPrefix(batchItemId);
+  if (itemPrefix === null) return null;
   const keys = Object.keys(rawOutputs);
   if (keys.length < 1 || keys.length > PRODUCTION_OUTPUT_EXTENSIONS.size || keys.some((key) => !PRODUCTION_OUTPUT_EXTENSIONS.has(key))) return null;
   const finalOutputs = {};
   const stagingOutputs = {};
+  const stagingToken = crypto.randomBytes(8).toString("hex");
   for (const key of keys) {
     const rawCandidate = String(rawOutputs[key] || "");
     const expectedExtension = PRODUCTION_OUTPUT_EXTENSIONS.get(key);
-    const expectedBasename = PRODUCTION_OUTPUT_BASENAMES.get(key);
+    const expectedBasename = `${itemPrefix}${PRODUCTION_OUTPUT_BASENAMES.get(key)}`;
     if (!path.isAbsolute(rawCandidate) || path.extname(rawCandidate).toLowerCase() !== expectedExtension || path.basename(rawCandidate) !== expectedBasename) return null;
     const candidate = canonicalNewPathInside(rawCandidate, APP_ARTIFACTS_ROOT);
     if (!candidate) return null;
     const canonicalArtifactsRoot = fs.realpathSync(APP_ARTIFACTS_ROOT);
     const relativeParts = path.relative(canonicalArtifactsRoot, candidate).split(path.sep);
     if (relativeParts.length !== 3 || relativeParts[1] !== jobId) return null;
-    const staging = path.join(path.dirname(candidate), `.${path.basename(candidate, expectedExtension)}.${jobId}.part${expectedExtension}`);
+    const staging = path.join(
+      path.dirname(candidate),
+      `.${path.basename(candidate, expectedExtension)}.${jobId}.${stagingToken}.part${expectedExtension}`,
+    );
     if (!canonicalNewPathInside(staging, APP_ARTIFACTS_ROOT) && !canonicalExistingPathInside(staging, APP_ARTIFACTS_ROOT)) return null;
     if (fs.existsSync(staging)) fs.rmSync(staging, { force: true });
     finalOutputs[key] = candidate;
@@ -223,13 +407,14 @@ function finalizeProductionReply(reply, params) {
     return reply;
   }
   const promoted = [];
+  let receiptPath = null;
   try {
     const outputBasenames = {};
     const outputHashes = {};
     for (const key of Object.keys(finalOutputs)) {
       const staging = canonicalExistingPathInside(stagingOutputs[key], APP_ARTIFACTS_ROOT);
       const finalPath = canonicalNewPathInside(finalOutputs[key], APP_ARTIFACTS_ROOT);
-      if (!staging || !finalPath || !fs.statSync(staging).isFile()) {
+      if (!staging || !finalPath || !productionFileLooksValid(key, staging)) {
         throw new Error("production_output_promotion_failed");
       }
     }
@@ -242,12 +427,37 @@ function finalizeProductionReply(reply, params) {
       outputBasenames[key] = path.basename(finalPath);
       outputHashes[key] = fileSha256(finalPath);
     }
+    const itemPrefix = productionItemPrefix(params.batch_item_id);
+    receiptPath = itemPrefix === null
+      ? null
+      : productionReceiptPath(finalOutputs, itemPrefix);
+    if (!receiptPath || fs.existsSync(receiptPath)) {
+      throw new Error("production_receipt_path_unavailable");
+    }
+    writeJsonAtomic(receiptPath, {
+      schema_version: 1,
+      job_id: params.job_id,
+      batch_item_id: params.batch_item_id || null,
+      source_sha256: params.source_sha256,
+      recipe_sha256: productionRecipeHash(params, Object.keys(finalOutputs)),
+      sandbox_copy: reply.result.sandbox_copy === true,
+      native_reopen_validated: reply.result.native_reopen_validated === true,
+      native_reopen_width: Number(reply.result.native_reopen_width || 0),
+      native_reopen_height: Number(reply.result.native_reopen_height || 0),
+      native_reopen_layer_count: Number(reply.result.native_reopen_layer_count || 0),
+      output_basenames: outputBasenames,
+      output_hashes: outputHashes,
+    });
     reply.result.output_basenames = outputBasenames;
     reply.result.output_hashes = outputHashes;
     reply.result.output_count = Object.keys(finalOutputs).length;
     delete reply.result.output_paths;
     return reply;
   } catch (_error) {
+    if (receiptPath) {
+      const exactReceipt = canonicalExistingPathInside(receiptPath, APP_ARTIFACTS_ROOT);
+      if (exactReceipt) fs.rmSync(exactReceipt, { force: true });
+    }
     for (const item of promoted.reverse()) {
       try {
         if (fs.existsSync(item.finalPath) && !fs.existsSync(item.staging)) fs.renameSync(item.finalPath, item.staging);
@@ -320,6 +530,30 @@ function validateRpcMessage(message) {
     }
     params.sandbox_verified = true;
   }
+  if (message.method === "ps.camera_raw.tune") {
+    if (
+      Object.hasOwn(params, "descriptor") ||
+      Object.hasOwn(params, "descriptors") ||
+      Object.hasOwn(params, "descriptor_fixture_path") ||
+      Object.hasOwn(params, "descriptor_fixture_verified")
+    ) {
+      return rpcError(message.id, -32602, "caller_supplied_camera_raw_descriptor_forbidden");
+    }
+    const cameraRawAllowedParams = new Set([
+      "job_id",
+      "dry_run",
+      "confirm_apply",
+      "confirm_export",
+      "preset",
+      "params",
+      "source",
+      "output",
+      "camera_raw_fixture_id",
+    ]);
+    if (Object.keys(params).some((key) => !cameraRawAllowedParams.has(key))) {
+      return rpcError(message.id, -32602, "camera_raw_params_not_allowed");
+    }
+  }
   if (message.method === "ps.camera_raw.tune" && params.dry_run === false) {
     if (params.confirm_apply !== true) {
       return rpcError(message.id, -32011, "confirm_apply=true_required");
@@ -332,31 +566,74 @@ function validateRpcMessage(message) {
     if (params.confirm_write !== true) {
       return rpcError(message.id, -32010, "confirm_write=true_required");
     }
-    const sourcePath = normalizeManagedSource(params.source_path, String(params.source_sha256 || ""));
-    const outputs = normalizeProductionOutputs(params.outputs, params.job_id);
-    if (!sourcePath) return rpcError(message.id, -32602, "source_path_outside_managed_projects_or_hash_mismatch");
-    if (!outputs) return rpcError(message.id, -32602, "outputs_outside_managed_artifacts_or_already_exist");
-    if (Boolean(params.export_subject) !== Object.hasOwn(outputs.finalOutputs, "subject")) {
-      cleanupProductionStaging(outputs.stagingOutputs);
+    const outputKeys = params.outputs && typeof params.outputs === "object" && !Array.isArray(params.outputs)
+      ? Object.keys(params.outputs)
+      : [];
+    if (
+      outputKeys.length < 1 ||
+      outputKeys.some((key) => !PRODUCTION_OUTPUT_EXTENSIONS.has(key))
+    ) {
+      return rpcError(message.id, -32602, "production_outputs_invalid");
+    }
+    if (Boolean(params.export_subject) !== outputKeys.includes("subject")) {
       return rpcError(message.id, -32602, "subject_output_must_match_export_subject");
     }
     const canvas = params.canvas || {};
     const adjustment = params.adjustment || {};
     const boundedInteger = (value, minimum, maximum) => Number.isInteger(value) && value >= minimum && value <= maximum;
     if (canvas.resize === true && (!boundedInteger(canvas.width, 64, 8192) || !boundedInteger(canvas.height, 64, 8192))) {
-      cleanupProductionStaging(outputs.stagingOutputs);
       return rpcError(message.id, -32602, "canvas_dimensions_out_of_range");
     }
     if (!boundedInteger(adjustment.brightness ?? 0, -150, 150) || !boundedInteger(adjustment.contrast ?? 0, -100, 100) || !boundedInteger(adjustment.saturation ?? 0, -100, 100)) {
-      cleanupProductionStaging(outputs.stagingOutputs);
       return rpcError(message.id, -32602, "adjustment_out_of_range");
     }
-    params.source_path = sourcePath;
-    params.outputs = outputs.finalOutputs;
-    params.staging_outputs = outputs.stagingOutputs;
-    params.managed_source_verified = true;
-    params.safe_roots_verified = true;
   }
+  return null;
+}
+
+function prepareProductionMessage(message) {
+  const params = message.params || {};
+  const sourcePath = normalizeManagedSource(
+    params.source_path,
+    String(params.source_sha256 || ""),
+  );
+  if (!sourcePath) {
+    return rpcError(
+      message.id,
+      -32602,
+      "source_path_outside_managed_projects_or_hash_mismatch",
+    );
+  }
+  const outputKeys = Object.keys(params.outputs || {});
+  const recipeSha256 = productionRecipeHash(params, outputKeys);
+  const recoveredResult = recoverProductionOutputs(
+    params.outputs,
+    params.job_id,
+    params.batch_item_id,
+    String(params.source_sha256 || ""),
+    recipeSha256,
+  );
+  params.source_path = sourcePath;
+  if (recoveredResult) {
+    params.recovered_result = recoveredResult;
+    return null;
+  }
+  const outputs = normalizeProductionOutputs(
+    params.outputs,
+    params.job_id,
+    params.batch_item_id,
+  );
+  if (!outputs) {
+    return rpcError(
+      message.id,
+      -32602,
+      "outputs_outside_managed_artifacts_or_already_exist",
+    );
+  }
+  params.outputs = outputs.finalOutputs;
+  params.staging_outputs = outputs.stagingOutputs;
+  params.managed_source_verified = true;
+  params.safe_roots_verified = true;
   return null;
 }
 
@@ -370,7 +647,9 @@ function rpcToUxp(message) {
     state.pending_jobs = pending.size;
     recordEvent("rpc_forwarded", { id: message.id, method: message.method });
     currentClient.send(JSON.stringify(message));
-    const timeoutMs = message.method === "ps.production.execute_confirmed" ? 55_000 : 8_000;
+    const timeoutMs = message.method === "ps.production.execute_confirmed"
+      ? PRODUCTION_RPC_TIMEOUT_MS
+      : 8_000;
     setTimeout(() => {
       if (pending.has(message.id)) {
         pending.delete(message.id);
@@ -378,16 +657,69 @@ function rpcToUxp(message) {
         state.last_error = "uxp_timeout";
         recordEvent("rpc_timeout", { id: message.id, method: message.method });
         if (message.method === "ps.production.execute_confirmed") {
-          timedOutProductionStaging.set(message.id, message.params?.staging_outputs || {});
+          const timedOutEntry = {
+            staging_outputs: message.params?.staging_outputs || {},
+          };
+          timedOutProductionStaging.set(message.id, timedOutEntry);
           setTimeout(() => {
-            cleanupProductionStaging(timedOutProductionStaging.get(message.id));
-            timedOutProductionStaging.delete(message.id);
-          }, 5 * 60_000);
+            if (timedOutProductionStaging.get(message.id) === timedOutEntry) {
+              cleanupProductionStaging(timedOutEntry.staging_outputs);
+              timedOutProductionStaging.delete(message.id);
+            }
+          }, PRODUCTION_STAGING_RETENTION_MS);
         }
         resolve(rpcError(message.id, -32002, "uxp_timeout"));
       }
     }, timeoutMs);
   });
+}
+
+const SERIALIZED_HOST_METHODS = new Set([
+  "ps.preview.export",
+  "ps.camera_raw.tune",
+  "ps.batchplay.execute_confirmed",
+  "ps.production.execute_confirmed",
+]);
+let adobeHostQueue = Promise.resolve();
+
+async function forwardRpc(message) {
+  if (
+    SERIALIZED_HOST_METHODS.has(message.method) &&
+    timedOutProductionStaging.size > 0
+  ) {
+    return rpcError(message.id, -32003, "adobe_host_recovery_pending");
+  }
+  if (message.method === "ps.production.execute_confirmed") {
+    const preparationError = prepareProductionMessage(message);
+    if (preparationError) return preparationError;
+    if (message.params?.recovered_result) {
+      return {
+        jsonrpc: "2.0",
+        id: message.id,
+        result: message.params.recovered_result,
+      };
+    }
+  }
+  let reply = await rpcToUxp(message);
+  if (message.method === "ps.production.execute_confirmed") {
+    reply = finalizeProductionReply(reply, message.params || {});
+  }
+  return reply;
+}
+
+function forwardRpcInHostOrder(message) {
+  if (!SERIALIZED_HOST_METHODS.has(message.method)) {
+    return forwardRpc(message);
+  }
+  const current = adobeHostQueue.then(
+    () => forwardRpc(message),
+    () => forwardRpc(message),
+  );
+  adobeHostQueue = current.then(
+    () => undefined,
+    () => undefined,
+  );
+  return current;
 }
 
 async function readBody(request, limit) {
@@ -465,10 +797,7 @@ const server = http.createServer(async (request, response) => {
       return;
     }
     liveSession.publish(rpcLiveSession({ bridge: "photoshop", message, phase: "running" }));
-    let reply = await rpcToUxp(message);
-    if (message.method === "ps.production.execute_confirmed") {
-      reply = finalizeProductionReply(reply, message.params || {});
-    }
+    const reply = await forwardRpcInHostOrder(message);
     liveSession.publish(
       rpcLiveSession({
         bridge: "photoshop",
@@ -534,7 +863,8 @@ if (WebSocketServer) {
         recordEvent("rpc_resolved", { id: message.id, ok: !message.error });
         resolver(message);
       } else if (timedOutProductionStaging.has(message.id)) {
-        cleanupProductionStaging(timedOutProductionStaging.get(message.id));
+        const timedOutEntry = timedOutProductionStaging.get(message.id);
+        cleanupProductionStaging(timedOutEntry?.staging_outputs);
         timedOutProductionStaging.delete(message.id);
         recordEvent("late_production_reply_cleaned", { id: message.id });
       }

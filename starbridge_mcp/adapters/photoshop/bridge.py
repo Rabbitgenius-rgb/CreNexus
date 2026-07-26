@@ -779,7 +779,9 @@ class PhotoshopBridgeAdapter(BaseBridge):
             )
 
         assert plan is not None
-        descriptor_fixture, descriptor_errors = load_verified_descriptor_fixture(arguments, plan)
+        descriptor_fixture, descriptor_errors = load_verified_descriptor_fixture(
+            self.repo_root, plan
+        )
         manifest_status = "ok" if ctx.dry_run else "blocked"
         manifest_errors: list[str] = []
         if not ctx.dry_run and not confirm_apply:
@@ -932,9 +934,12 @@ class PhotoshopBridgeAdapter(BaseBridge):
                     "ps.camera_raw.tune",
                     {
                         "job_id": ctx.job_id,
-                        "plan": plan,
-                        "descriptors": descriptor_fixture["descriptors"],
-                        "descriptor_fixture_verified": True,
+                        "dry_run": False,
+                        "preset": plan["preset"],
+                        "params": plan["params"],
+                        "source": plan["source"],
+                        "output": plan["output"],
+                        "camera_raw_fixture_id": descriptor_fixture["fixture_id"],
                         "confirm_apply": True,
                         "confirm_export": confirm_export,
                     },

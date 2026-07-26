@@ -25,10 +25,65 @@
       "maxProperties": 32,
       "properties": {
         "job_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$"},
+        "batch_item_id": {"type": "string", "pattern": "^item-[0-9a-f]{24}$"},
         "dry_run": {"type": "boolean", "default": true},
         "confirm_write": {"type": "boolean", "default": false},
         "confirm_apply": {"type": "boolean", "default": false},
         "confirm_export": {"type": "boolean", "default": false},
+        "camera_raw_fixture_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$"
+        },
+        "preset": {"type": "string", "enum": ["blue_artwork_clean"]},
+        "params": {
+          "type": "object",
+          "properties": {
+            "temperature": {"type": "number", "minimum": 2000, "maximum": 50000},
+            "tint": {"type": "number", "minimum": -150, "maximum": 150},
+            "exposure": {"type": "number", "minimum": -5, "maximum": 5},
+            "contrast": {"type": "number", "minimum": -100, "maximum": 100},
+            "highlights": {"type": "number", "minimum": -100, "maximum": 100},
+            "shadows": {"type": "number", "minimum": -100, "maximum": 100},
+            "whites": {"type": "number", "minimum": -100, "maximum": 100},
+            "blacks": {"type": "number", "minimum": -100, "maximum": 100},
+            "texture": {"type": "number", "minimum": -100, "maximum": 100},
+            "clarity": {"type": "number", "minimum": -100, "maximum": 100},
+            "dehaze": {"type": "number", "minimum": -100, "maximum": 100},
+            "vibrance": {"type": "number", "minimum": -100, "maximum": 100},
+            "saturation": {"type": "number", "minimum": -100, "maximum": 100}
+          },
+          "additionalProperties": false
+        },
+        "source": {
+          "type": "object",
+          "properties": {
+            "mode": {"type": "string", "enum": ["active_document", "explicit_path"]},
+            "path_provided": {"type": "boolean"},
+            "read_policy": {"const": "user_explicit_path_only"}
+          },
+          "required": ["mode"],
+          "additionalProperties": false
+        },
+        "output": {
+          "type": "object",
+          "properties": {
+            "dir": {"const": "examples/output/photoshop"},
+            "basename": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$"
+            },
+            "formats": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 2,
+              "uniqueItems": true,
+              "items": {"type": "string", "enum": ["jpg", "png"]}
+            },
+            "export_after_apply": {"type": "boolean"}
+          },
+          "required": ["dir", "basename", "formats", "export_after_apply"],
+          "additionalProperties": false
+        },
         "output_path": {"type": "string", "maxLength": 1024},
         "source_path": {"type": "string", "minLength": 1, "maxLength": 1024},
         "source_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
@@ -37,10 +92,10 @@
           "minProperties": 1,
           "maxProperties": 4,
           "properties": {
-            "png": {"type": "string", "maxLength": 1024, "pattern": "[\\\\/]photoshop-preview\\.png$"},
-            "jpeg": {"type": "string", "maxLength": 1024, "pattern": "[\\\\/]photoshop-preview\\.jpg$"},
-            "psd": {"type": "string", "maxLength": 1024, "pattern": "[\\\\/]photoshop-copy\\.psd$"},
-            "subject": {"type": "string", "maxLength": 1024, "pattern": "[\\\\/]photoshop-subject\\.png$"}
+            "png": {"type": "string", "maxLength": 1024, "pattern": "[\\\\/](item-[0-9a-f]{24}-)?photoshop-preview\\.png$"},
+            "jpeg": {"type": "string", "maxLength": 1024, "pattern": "[\\\\/](item-[0-9a-f]{24}-)?photoshop-preview\\.jpg$"},
+            "psd": {"type": "string", "maxLength": 1024, "pattern": "[\\\\/](item-[0-9a-f]{24}-)?photoshop-copy\\.psd$"},
+            "subject": {"type": "string", "maxLength": 1024, "pattern": "[\\\\/](item-[0-9a-f]{24}-)?photoshop-subject\\.png$"}
           },
           "additionalProperties": false
         },
@@ -76,6 +131,40 @@
   "allOf": [
     {
       "if": {
+        "properties": {"method": {"const": "ps.camera_raw.tune"}},
+        "required": ["method"]
+      },
+      "then": {
+        "properties": {
+          "params": {
+            "required": [
+              "job_id",
+              "dry_run",
+              "confirm_apply",
+              "confirm_export",
+              "preset",
+              "params",
+              "source",
+              "output"
+            ],
+            "properties": {
+              "job_id": true,
+              "dry_run": true,
+              "confirm_apply": true,
+              "confirm_export": true,
+              "camera_raw_fixture_id": true,
+              "preset": true,
+              "params": true,
+              "source": true,
+              "output": true
+            },
+            "additionalProperties": false
+          }
+        }
+      }
+    },
+    {
+      "if": {
         "properties": {"method": {"const": "ps.production.execute_confirmed"}},
         "required": ["method"]
       },
@@ -94,6 +183,7 @@
             ],
             "properties": {
               "job_id": true,
+              "batch_item_id": true,
               "confirm_write": true,
               "source_path": true,
               "source_sha256": true,

@@ -1,4 +1,6 @@
 import type {
+  AdobeBatchExportRequest,
+  AdobeBatchExportResult,
   AdobeExportReceipt,
   AdobeExportRequest,
   ApiEnvelope,
@@ -50,6 +52,7 @@ export interface KORYAOClient {
   openLogsDirectory(): Promise<string>;
   openProjectArtifacts(projectId: string): Promise<string>;
   exportAdobeFile(request: AdobeExportRequest): Promise<AdobeExportReceipt | null>;
+  exportAdobeBatch(request: AdobeBatchExportRequest): Promise<AdobeBatchExportResult | null>;
   listAdobeExports(projectId: string): Promise<AdobeExportReceipt[]>;
   getConnections(): Promise<ConnectionOverview>;
   getModelRuntimeStatus(): Promise<ModelRuntimeStatus>;
@@ -198,6 +201,10 @@ export class KORYAOApiClient implements KORYAOClient {
 
   exportAdobeFile(request: AdobeExportRequest): Promise<AdobeExportReceipt | null> {
     return this.execute(() => this.transport.exportAdobeFile(request));
+  }
+
+  exportAdobeBatch(request: AdobeBatchExportRequest): Promise<AdobeBatchExportResult | null> {
+    return this.execute(() => this.transport.exportAdobeBatch(request));
   }
 
   listAdobeExports(projectId: string): Promise<AdobeExportReceipt[]> {

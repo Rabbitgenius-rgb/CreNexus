@@ -1,4 +1,6 @@
 import type {
+  AdobeBatchExportRequest,
+  AdobeBatchExportResult,
   AdobeExportReceipt,
   AdobeExportRequest,
   ApiEnvelope,
@@ -118,6 +120,15 @@ export class HttpTransport implements KORYAOTransport {
     throw new TransportError(
       "desktop_required",
       "浏览器开发模式不能调用本机 Photoshop 或 Illustrator 导出。",
+    );
+  }
+
+  async exportAdobeBatch(
+    _request: AdobeBatchExportRequest,
+  ): Promise<AdobeBatchExportResult | null> {
+    throw new TransportError(
+      "desktop_required",
+      "浏览器开发模式不能调用本机 Photoshop 或 Illustrator 批量导出。",
     );
   }
 

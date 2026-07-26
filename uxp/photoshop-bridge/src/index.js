@@ -1,5 +1,6 @@
 import { BridgeClient } from "./bridge-client.js";
 import { executeTypedBatchPlay, runModalJob, validateBatchPlay } from "./batchplay-runner.js";
+import { cameraRawFixtureStatus } from "./camera-raw-fixture.js";
 
 const photoshop = require("photoshop");
 const { action, app } = photoshop;
@@ -12,6 +13,29 @@ const CAMERA_RAW_BLOCKED_REASON = "camera_raw_batchplay_descriptor_not_recorded"
 const CAMERA_RAW_NEXT_STEP = "Record a verified Camera Raw Filter descriptor with Alchemist or Photoshop Action listener and add it as a fixture.";
 const CAMERA_RAW_PROTOCOL_VERSION = "camera_raw_tune.v1";
 const CAMERA_RAW_OUTPUT_DIR = "examples/output/photoshop";
+const CAMERA_RAW_RECORDING_LIMIT = 48;
+const CAMERA_RAW_RECORDING_MAX_DEPTH = 12;
+const CAMERA_RAW_RECORDING_MAX_KEYS = 128;
+const CAMERA_RAW_PRIVATE_VALUE_PATTERN =
+  /(?:[a-z]:[\\/]|\\\\[^\\]+\\|\/(?:users|home|private|volumes)\/|file:\/\/|https?:\/\/|(?:^|[\\/])[^\\/]+\.(?:psd|psb|jpg|jpeg|png|tif|tiff|dng|cr2|cr3|nef|arw|raf|raw)$)/i;
+const CAMERA_RAW_PRIVATE_KEYS = new Set([
+  "documentid",
+  "layerid",
+  "filename",
+  "filepath",
+  "fullpath",
+  "path",
+  "targetpath",
+  "sourcepath",
+  "url",
+  "username",
+  "userid",
+  "sessionid",
+  "token",
+  "cookie",
+  "authorization",
+  "machineid",
+]);
 const CAMERA_RAW_DEFAULTS = {
   temperature: 4800,
   tint: 10,
@@ -42,6 +66,164 @@ const CAMERA_RAW_RANGES = {
   vibrance: [-100, 100],
   saturation: [-100, 100],
 };
+const cameraRawRecording = {
+  active: false,
+  events: [],
+  rejected: 0,
+};
+
+function isCameraRawPrivateKey(key) {
+  const normalized = String(key || "")
+    .replace(/[^a-z0-9]/gi, "")
+    .toLowerCase();
+  return CAMERA_RAW_PRIVATE_KEYS.has(normalized) || normalized.endsWith("filepath");
+}
+
+function sanitizeRecordedValue(value, depth = 0) {
+  if (depth > CAMERA_RAW_RECORDING_MAX_DEPTH) {
+    throw new Error("descriptor_too_deep");
+  }
+  if (value === null || typeof value === "boolean") return value;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new Error("descriptor_non_finite_number");
+    return value;
+  }
+  if (typeof value === "string") {
+    if (value.length > 512) throw new Error("descriptor_string_too_long");
+    if (CAMERA_RAW_PRIVATE_VALUE_PATTERN.test(value)) {
+      throw new Error("descriptor_contains_private_value");
+    }
+    return value;
+  }
+  if (Array.isArray(value)) {
+    if (value.length > CAMERA_RAW_RECORDING_MAX_KEYS) {
+      throw new Error("descriptor_array_too_large");
+    }
+    return value.map((item) => sanitizeRecordedValue(item, depth + 1));
+  }
+  if (typeof value === "object") {
+    const entries = Object.entries(value);
+    if (entries.length > CAMERA_RAW_RECORDING_MAX_KEYS) {
+      throw new Error("descriptor_object_too_large");
+    }
+    const sanitized = {};
+    for (const [key, item] of entries) {
+      if (isCameraRawPrivateKey(key) || key === "_id") {
+        continue;
+      }
+      if (key === "_options") {
+        continue;
+      }
+      if (key === "_target" && Array.isArray(item)) {
+        sanitized[key] = item.map((target) => {
+          if (!target || typeof target !== "object") {
+            throw new Error("descriptor_target_invalid");
+          }
+          const safeTarget = {};
+          for (const targetKey of ["_ref", "_enum", "_value", "_property"]) {
+            if (Object.prototype.hasOwnProperty.call(target, targetKey)) {
+              safeTarget[targetKey] = sanitizeRecordedValue(target[targetKey], depth + 2);
+            }
+          }
+          if (!safeTarget._ref) {
+            throw new Error("descriptor_target_not_generic");
+          }
+          return safeTarget;
+        });
+        continue;
+      }
+      sanitized[key] = sanitizeRecordedValue(item, depth + 1);
+    }
+    return sanitized;
+  }
+  throw new Error("descriptor_value_type_not_supported");
+}
+
+function cameraRawRecordingPayload() {
+  return {
+    fixture_status: "captured_unverified",
+    review_required: true,
+    protocol_version: CAMERA_RAW_PROTOCOL_VERSION,
+    photoshop_version: String(app?.version || "unknown"),
+    captured_event_count: cameraRawRecording.events.length,
+    rejected_event_count: cameraRawRecording.rejected,
+    descriptors: cameraRawRecording.events,
+  };
+}
+
+function renderCameraRawRecording(message) {
+  const status = document.querySelector("#camera-raw-recorder-status");
+  const output = document.querySelector("#camera-raw-recorder-output");
+  const start = document.querySelector("#camera-raw-recorder-start");
+  const stop = document.querySelector("#camera-raw-recorder-stop");
+  setPanelText(status, message);
+  if (start) start.disabled = cameraRawRecording.active;
+  if (stop) stop.disabled = !cameraRawRecording.active;
+  if (output) {
+    output.value = cameraRawRecording.events.length
+      ? JSON.stringify(cameraRawRecordingPayload(), null, 2)
+      : "";
+  }
+}
+
+function onCameraRawActionEvent(event, descriptor) {
+  if (!cameraRawRecording.active) return;
+  if (cameraRawRecording.events.length >= CAMERA_RAW_RECORDING_LIMIT) {
+    cameraRawRecording.rejected += 1;
+    renderCameraRawRecording(
+      `已达到 ${CAMERA_RAW_RECORDING_LIMIT} 条上限，请停止录制并审查。`,
+    );
+    return;
+  }
+  try {
+    const eventName = sanitizeRecordedValue(String(event || "unknown"));
+    const safeDescriptor = sanitizeRecordedValue(descriptor || {});
+    cameraRawRecording.events.push({
+      event: eventName,
+      descriptor: safeDescriptor,
+    });
+    renderCameraRawRecording(
+      `正在录制：已捕获 ${cameraRawRecording.events.length} 条安全事件。`,
+    );
+  } catch (_error) {
+    cameraRawRecording.rejected += 1;
+    renderCameraRawRecording(
+      `正在录制：已捕获 ${cameraRawRecording.events.length} 条，拒绝 ${cameraRawRecording.rejected} 条含敏感或异常数据的事件。`,
+    );
+  }
+}
+
+async function startCameraRawRecording() {
+  if (cameraRawRecording.active) return;
+  cameraRawRecording.events = [];
+  cameraRawRecording.rejected = 0;
+  try {
+    await action.addNotificationListener(["all"], onCameraRawActionEvent);
+    cameraRawRecording.active = true;
+    renderCameraRawRecording(
+      "录制中：现在手动执行一次最小 Camera Raw 滤镜操作，然后点击“停止并审查”。",
+    );
+  } catch (_error) {
+    cameraRawRecording.active = false;
+    renderCameraRawRecording(
+      "无法开始录制。请确认 Photoshop 已开启开发人员模式并重新加载此插件。",
+    );
+  }
+}
+
+async function stopCameraRawRecording() {
+  if (!cameraRawRecording.active) return;
+  try {
+    await action.removeNotificationListener(["all"], onCameraRawActionEvent);
+  } finally {
+    cameraRawRecording.active = false;
+    renderCameraRawRecording(
+      cameraRawRecording.events.length
+        ? `录制已停止：${cameraRawRecording.events.length} 条已脱敏事件等待人工审查，尚未获准执行。`
+        : "录制已停止，但没有捕获到可审查事件。",
+    );
+  }
+}
 
 function currentHost() {
   return {
@@ -116,10 +298,10 @@ function cameraRawPlan(params = {}) {
     errors.push("source.mode must be active_document or explicit_path");
   }
   if (sourceMode === "explicit_path") {
-    if (!rawSource.path) {
+    if (!rawSource.path && rawSource.path_provided !== true) {
       errors.push("source.path is required when source.mode is explicit_path");
     } else {
-      source.path = String(rawSource.path);
+      source.path_provided = true;
       source.read_policy = "user_explicit_path_only";
     }
   }
@@ -151,7 +333,7 @@ function cameraRawPlan(params = {}) {
         formats,
         export_after_apply: Boolean(rawOutput.export_after_apply),
       },
-      descriptor_status: "missing",
+      descriptor_status: cameraRawFixtureStatus().verified ? "reviewed" : "missing",
       execution_path: ["Codex", "KORYAO MCP", "Node Proxy", "UXP Plugin", "Photoshop"],
     },
   };
@@ -167,6 +349,19 @@ async function ping() {
 }
 
 async function cameraRawTune(params) {
+  if (
+    Object.prototype.hasOwnProperty.call(params || {}, "descriptor") ||
+    Object.prototype.hasOwnProperty.call(params || {}, "descriptors") ||
+    Object.prototype.hasOwnProperty.call(params || {}, "descriptor_fixture_path") ||
+    Object.prototype.hasOwnProperty.call(params || {}, "descriptor_fixture_verified")
+  ) {
+    return {
+      ok: false,
+      executed: false,
+      blocked_reason: "caller_supplied_camera_raw_descriptor_forbidden",
+      photoshop_host: currentHost(),
+    };
+  }
   const dryRun = params?.dry_run !== false;
   const confirmApply = Boolean(params?.confirm_apply);
   const confirmExport = Boolean(params?.confirm_export);
@@ -207,43 +402,51 @@ async function cameraRawTune(params) {
       message: "confirm_export=true is required when output.export_after_apply=true.",
     };
   }
-  if (params?.descriptor_fixture_verified === true && Array.isArray(params?.descriptors) && params.descriptors.length) {
-    return runModalJob("ps.camera_raw.tune", { commandName: "KORYAO Camera Raw Tune" }, async () => {
-      const batchplayResult = await action.batchPlay(params.descriptors, { synchronousExecution: true, modalBehavior: "execute" });
-      return {
-        ok: true,
-        executed: true,
-        dry_run: false,
-        confirm_apply: true,
-        confirm_export: confirmExport,
-        batchplay_result: batchplayResult,
-        output_files: plan.output.export_after_apply ? plan.output.formats.map((format) => `${plan.output.dir}/${plan.output.basename}.${format}`) : [],
-        plan,
-        photoshop_host: currentHost(),
-        warnings: plan.output.export_after_apply ? ["Camera Raw descriptor applied; export path remains host-dependent in UXP V1."] : [],
-      };
-    });
+  const fixtureStatus = cameraRawFixtureStatus();
+  if (
+    !fixtureStatus.verified ||
+    fixtureStatus.fixture_id !== String(params?.camera_raw_fixture_id || "")
+  ) {
+    return {
+      ok: false,
+      executed: false,
+      dry_run: false,
+      confirm_apply: true,
+      confirm_export: confirmExport,
+      blocked_reason: CAMERA_RAW_BLOCKED_REASON,
+      next_step: CAMERA_RAW_NEXT_STEP,
+      plan,
+      photoshop_host: currentHost(),
+    };
   }
-  return runModalJob("ps.camera_raw.tune", { commandName: "KORYAO Camera Raw Tune" }, async () => ({
+  return {
     ok: false,
+    executed: false,
     dry_run: false,
     confirm_apply: true,
     confirm_export: confirmExport,
-    blocked_reason: CAMERA_RAW_BLOCKED_REASON,
-    next_step: CAMERA_RAW_NEXT_STEP,
+    blocked_reason: "camera_raw_verified_export_not_connected",
+    next_step: "Connect reviewed Camera Raw apply to managed staging export, native reopen validation, and cleanup before enabling real execution.",
     plan,
     photoshop_host: currentHost(),
-  }));
+  };
 }
 
 async function documentInfo() {
   const document = activeDocumentOrNull();
   if (!document) {
-    return { ok: false, installed: true, message: "No active Photoshop document." };
+    return {
+      ok: true,
+      installed: true,
+      active_document: false,
+      message: "No active Photoshop document.",
+      photoshop_host: currentHost(),
+    };
   }
   const activeLayer = document.activeLayers?.[0] || null;
   return {
     ok: true,
+    active_document: true,
     photoshop_host: currentHost(),
     document: {
       document_id: String(document._id || document.id || ""),
@@ -411,23 +614,6 @@ function assertProductionParams(params) {
   return { sourcePath, stagingOutputs };
 }
 
-async function importProjectLayer(sandboxDocument, sourcePath) {
-  const sourceEntry = await localFileSystem.getEntryWithUrl(toFileUrl(sourcePath));
-  if (!sourceEntry || !sourceEntry.isFile) throw new Error("managed_source_file_unavailable");
-  const sourceDocument = await app.open(sourceEntry);
-  try {
-    const sourceLayer = sourceDocument?.activeLayers?.[0] || sourceDocument?.layers?.[0];
-    if (!sourceLayer || typeof sourceLayer.duplicate !== "function") throw new Error("managed_source_layer_unavailable");
-    await sourceLayer.duplicate(sandboxDocument);
-  } finally {
-    await closeDocumentWithoutSaving(sourceDocument);
-  }
-  await activateDocument(sandboxDocument);
-  const importedLayer = sandboxDocument?.activeLayers?.[0] || null;
-  if (importedLayer) importedLayer.name = "StarBridge Imported Asset";
-  return Boolean(importedLayer);
-}
-
 async function applyProductionAdjustments(params) {
   const canvas = params?.canvas || {};
   const adjustment = params?.adjustment || {};
@@ -493,10 +679,6 @@ async function exportSubjectCopy(document, absolutePath) {
 
 async function productionExecuteConfirmed(params) {
   const { sourcePath, stagingOutputs } = assertProductionParams(params);
-  const originalDocument = activeDocumentOrNull();
-  if (!originalDocument || typeof originalDocument.duplicate !== "function") {
-    return { ok: false, executed: false, message: "An active Photoshop document is required." };
-  }
   return runModalJob(
     "ps.production.execute_confirmed",
     { commandName: "StarBridge Photoshop Production", historyTarget: "handler_document", timeoutSeconds: 45 },
@@ -506,14 +688,29 @@ async function productionExecuteConfirmed(params) {
         throw new Error("photoshop_auto_close_control_required");
       }
       modalControl.checkpoint();
-      const sandboxDocument = await originalDocument.duplicate("StarBridge Sandbox Copy", false);
-      const sandboxId = sandboxDocument?.id ?? sandboxDocument?._id;
-      if (sandboxId === undefined || sandboxId === null) throw new Error("sandbox_document_id_unavailable");
-      await hostControl.registerAutoCloseDocument(sandboxId);
+      const sourceEntry = await localFileSystem.getEntryWithUrl(toFileUrl(sourcePath));
+      if (!sourceEntry || !sourceEntry.isFile) {
+        throw new Error("managed_source_file_unavailable");
+      }
+      let sourceDocument = null;
+      let sandboxDocument = null;
+      let sandboxId = null;
+      try {
+        sourceDocument = await app.open(sourceEntry);
+        if (!sourceDocument || typeof sourceDocument.duplicate !== "function") {
+          throw new Error("managed_source_document_unavailable");
+        }
+        sandboxDocument = await sourceDocument.duplicate("StarBridge Sandbox Copy", false);
+        sandboxId = sandboxDocument?.id ?? sandboxDocument?._id;
+        if (sandboxId === undefined || sandboxId === null) {
+          throw new Error("sandbox_document_id_unavailable");
+        }
+        await hostControl.registerAutoCloseDocument(sandboxId);
+      } finally {
+        if (sourceDocument) await closeDocumentWithoutSaving(sourceDocument);
+      }
       await modalControl.suspendHistory(sandboxId, "StarBridge Photoshop Production");
       await activateDocument(sandboxDocument);
-      modalControl.checkpoint();
-      const imported = await importProjectLayer(sandboxDocument, sourcePath);
       modalControl.checkpoint();
       const adjustmentCount = await applyProductionAdjustments(params);
       modalControl.checkpoint();
@@ -528,17 +725,21 @@ async function productionExecuteConfirmed(params) {
         ? await validateNativePsdReopen(String(stagingOutputs.psd), sandboxDocument)
         : { validated: false, skipped: true };
       modalControl.checkpoint();
+      await closeDocumentWithoutSaving(sandboxDocument);
       await hostControl.unregisterAutoCloseDocument(sandboxId);
       return {
         ok: true,
         executed: true,
         sandbox_copy: true,
         source_overwritten: false,
-        imported_project_layer: imported,
+        managed_source_opened_read_only: true,
         adjustment_count: adjustmentCount,
         output_formats: Object.keys(stagingOutputs),
         native_reopen_validated: nativeReopen.validated === true,
         native_reopen_skipped: nativeReopen.skipped === true,
+        native_reopen_width: Number(nativeReopen.width || 0),
+        native_reopen_height: Number(nativeReopen.height || 0),
+        native_reopen_layer_count: Number(nativeReopen.layer_count || 0),
         rollback_supported: true,
         photoshop_host: currentHost(),
         warnings: [],
@@ -672,6 +873,13 @@ function onLiveSession(update) {
 
 const client = new BridgeClient({ handlers, onStatus: onBridgeStatus, onSession: onLiveSession });
 document.querySelector("#reconnect")?.addEventListener("click", () => client.reconnect());
+document
+  .querySelector("#camera-raw-recorder-start")
+  ?.addEventListener("click", () => startCameraRawRecording());
+document
+  .querySelector("#camera-raw-recorder-stop")
+  ?.addEventListener("click", () => stopCameraRawRecording());
+renderCameraRawRecording("尚未录制。此入口只生成待审查候选，不会执行 Camera Raw。");
 client.connect();
 
 if (entrypoints) {

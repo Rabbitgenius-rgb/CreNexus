@@ -192,10 +192,6 @@ def camera_raw_tune_schema() -> dict[str, Any]:
             },
             "confirm_apply": {"type": "boolean", "default": False},
             "confirm_export": {"type": "boolean", "default": False},
-            "descriptor_fixture_path": {
-                "type": "string",
-                "description": "Optional local verified Camera Raw BatchPlay descriptor fixture path. Do not commit real local paths.",
-            },
             "preset": {
                 "type": "string",
                 "enum": ["blue_artwork_clean"],

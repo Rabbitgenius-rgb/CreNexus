@@ -17,6 +17,33 @@ header p { margin: 5px 0 0; color: #a3a3a3; font-size: 12px; line-height: 1.45; 
   border-radius: 8px;
   background: #292929;
 }
+.recorder-card {
+  margin-top: 12px;
+  padding: 13px;
+  border: 1px solid #444;
+  border-radius: 8px;
+  background: #292929;
+}
+.recorder-card h2 { margin: 0; font-size: 13px; }
+.recorder-card > p { margin: 7px 0 0; color: #b8b8b8; font-size: 10px; line-height: 1.5; }
+.recorder-actions { display: flex; gap: 7px; margin-top: 10px; }
+.recorder-actions button { flex: 1; }
+.recorder-actions .secondary { background: #555; }
+.recorder-actions button:disabled { color: #9a9a9a; background: #3a3a3a; }
+.recorder-status { min-height: 30px; }
+#camera-raw-recorder-output {
+  box-sizing: border-box;
+  width: 100%;
+  height: 92px;
+  margin-top: 8px;
+  resize: vertical;
+  border: 1px solid #4c4c4c;
+  border-radius: 4px;
+  padding: 7px;
+  color: #d6d6d6;
+  background: #1b1b1b;
+  font: 9px/1.4 ui-monospace, monospace;
+}
 .session-heading { display: grid; grid-template-columns: 10px 1fr auto; align-items: center; gap: 8px; }
 .session-heading strong { font-size: 13px; }
 .session-heading > span:last-child { color: #a3a3a3; font-size: 11px; }

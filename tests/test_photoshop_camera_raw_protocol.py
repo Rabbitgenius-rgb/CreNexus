@@ -5,8 +5,10 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from examples.photoshop_bridge.scripts.camera_raw_tune import build_arguments
 from starbridge_mcp.adapters.photoshop.camera_raw_protocol import (
@@ -126,7 +128,8 @@ class PhotoshopCameraRawProtocolTests(unittest.TestCase):
         self.assertEqual("camera_raw_tune.v1", plan["protocol_version"])
         self.assertEqual("0.5", plan["xmp_settings"]["Exposure2012"])
         self.assertEqual("explicit_path", plan["source"]["mode"])
-        self.assertEqual("<user-provided-raw-file>", plan["source"]["path"])
+        self.assertTrue(plan["source"]["path_provided"])
+        self.assertNotIn("path", plan["source"])
         self.assertEqual("examples/output/photoshop", plan["output"]["dir"])
         self.assertEqual(0.5, plan["params"]["exposure"])
 
@@ -175,96 +178,137 @@ class PhotoshopCameraRawProtocolTests(unittest.TestCase):
         self.assertEqual([], errors)
         assert plan is not None
         with tempfile.TemporaryDirectory() as tmp:
-            fixture_path = Path(tmp) / "fixture.json"
-            fixture_path.write_text(
-                json.dumps(
-                    {
-                        "protocol_version": "camera_raw_tune.v1",
-                        "method": "ps.camera_raw.tune",
-                        "descriptor_kind": "camera_raw_filter",
-                        "verified": False,
-                        "descriptors": [{"_obj": "Adobe Camera Raw Filter"}],
-                    }
-                ),
-                encoding="utf-8",
+            fixture_path = (
+                Path(tmp)
+                / "examples"
+                / "photoshop_bridge"
+                / "protocols"
+                / "camera_raw_filter.v1.json"
             )
-            fixture, fixture_errors = load_verified_descriptor_fixture(
-                {"descriptor_fixture_path": str(fixture_path)}, plan
-            )
+            fixture_path.parent.mkdir(parents=True)
+            encoded = json.dumps(
+                {
+                    "protocol_version": "camera_raw_tune.v1",
+                    "method": "ps.camera_raw.tune",
+                    "fixture_id": "camera-raw-test-v1",
+                    "descriptor_kind": "camera_raw_filter",
+                    "verified": False,
+                    "descriptors": [{"_obj": "Adobe Camera Raw Filter"}],
+                }
+            ).encode()
+            fixture_path.write_bytes(encoded)
+            with patch(
+                "starbridge_mcp.adapters.photoshop.camera_raw_protocol.CAMERA_RAW_DESCRIPTOR_SHA256",
+                sha256(encoded).hexdigest(),
+            ):
+                fixture, fixture_errors = load_verified_descriptor_fixture(Path(tmp), plan)
 
         self.assertIsNone(fixture)
         self.assertIn("verified=true", " ".join(fixture_errors))
 
-    def test_verified_fixture_renders_parameter_template(self) -> None:
+    def test_bundled_hash_pinned_fixture_renders_only_parameter_templates(self) -> None:
         plan, errors = build_camera_raw_tune_protocol({"params": {"exposure": 0.5}}, REPO_ROOT)
         self.assertEqual([], errors)
         assert plan is not None
         with tempfile.TemporaryDirectory() as tmp:
-            fixture_path = Path(tmp) / "fixture.json"
-            fixture_path.write_text(
-                json.dumps(
-                    {
-                        "protocol_version": "camera_raw_tune.v1",
-                        "method": "ps.camera_raw.tune",
-                        "descriptor_kind": "camera_raw_filter",
-                        "verified": True,
-                        "verified_by": "local_user",
-                        "descriptors": [
-                            {"_obj": "Adobe Camera Raw Filter", "exposure": "{{params.exposure}}"}
-                        ],
-                    }
-                ),
-                encoding="utf-8",
+            fixture_path = (
+                Path(tmp)
+                / "examples"
+                / "photoshop_bridge"
+                / "protocols"
+                / "camera_raw_filter.v1.json"
             )
-            fixture, fixture_errors = load_verified_descriptor_fixture(
-                {"descriptor_fixture_path": str(fixture_path)}, plan
-            )
+            fixture_path.parent.mkdir(parents=True)
+            encoded = json.dumps(
+                {
+                    "protocol_version": "camera_raw_tune.v1",
+                    "method": "ps.camera_raw.tune",
+                    "fixture_id": "camera-raw-test-v1",
+                    "descriptor_kind": "camera_raw_filter",
+                    "verified": True,
+                    "verified_by": "local_user",
+                    "descriptors": [
+                        {"_obj": "Adobe Camera Raw Filter", "exposure": "{{params.exposure}}"}
+                    ],
+                }
+            ).encode()
+            fixture_path.write_bytes(encoded)
+            with patch(
+                "starbridge_mcp.adapters.photoshop.camera_raw_protocol.CAMERA_RAW_DESCRIPTOR_SHA256",
+                sha256(encoded).hexdigest(),
+            ):
+                fixture, fixture_errors = load_verified_descriptor_fixture(Path(tmp), plan)
 
         self.assertEqual([], fixture_errors)
         assert fixture is not None
         self.assertTrue(fixture["verified"])
-        self.assertEqual(0.5, fixture["descriptors"][0]["exposure"])
+        self.assertEqual("camera-raw-test-v1", fixture["fixture_id"])
+        self.assertNotIn("descriptors", fixture)
 
-    def test_confirmed_run_with_verified_fixture_waits_for_uxp_connection(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            fixture_path = Path(tmp) / "fixture.json"
-            fixture_path.write_text(
-                json.dumps(
+    def test_hash_pinned_fixture_rejects_private_paths_and_file_names(self) -> None:
+        plan, errors = build_camera_raw_tune_protocol({"params": {"exposure": 0.5}}, REPO_ROOT)
+        self.assertEqual([], errors)
+        assert plan is not None
+        for descriptor in (
+            {"_obj": "Adobe Camera Raw Filter", "targetPath": "opaque-session-value"},
+            {"_obj": "Adobe Camera Raw Filter", "profileFilePath": "private-profile.dng"},
+            {"_obj": "Adobe Camera Raw Filter", "value": "customer-image.psd"},
+        ):
+            with self.subTest(descriptor=descriptor), tempfile.TemporaryDirectory() as tmp:
+                fixture_path = (
+                    Path(tmp)
+                    / "examples"
+                    / "photoshop_bridge"
+                    / "protocols"
+                    / "camera_raw_filter.v1.json"
+                )
+                fixture_path.parent.mkdir(parents=True)
+                encoded = json.dumps(
                     {
                         "protocol_version": "camera_raw_tune.v1",
                         "method": "ps.camera_raw.tune",
+                        "fixture_id": "camera-raw-private-v1",
                         "descriptor_kind": "camera_raw_filter",
                         "verified": True,
                         "verified_by": "local_user",
-                        "descriptors": [
-                            {"_obj": "Adobe Camera Raw Filter", "exposure": "{{params.exposure}}"}
-                        ],
+                        "descriptors": [descriptor],
                     }
-                ),
-                encoding="utf-8",
-            )
-            response = handle_request(
-                {
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "tools/call",
-                    "params": {
-                        "name": "ps.camera_raw.tune",
-                        "arguments": {
-                            "dry_run": False,
-                            "confirm_apply": True,
-                            "descriptor_fixture_path": str(fixture_path),
-                            "params": {"exposure": 0.5},
-                        },
+                ).encode()
+                fixture_path.write_bytes(encoded)
+                with patch(
+                    "starbridge_mcp.adapters.photoshop.camera_raw_protocol.CAMERA_RAW_DESCRIPTOR_SHA256",
+                    sha256(encoded).hexdigest(),
+                ):
+                    fixture, fixture_errors = load_verified_descriptor_fixture(Path(tmp), plan)
+
+                self.assertIsNone(fixture)
+                self.assertIn("unsafe", " ".join(fixture_errors))
+
+    def test_confirmed_run_cannot_self_attest_an_external_fixture(self) -> None:
+        response = handle_request(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "ps.camera_raw.tune",
+                    "arguments": {
+                        "dry_run": False,
+                        "confirm_apply": True,
+                        "descriptor_fixture_path": "C:/untrusted/fixture.json",
+                        "params": {"exposure": 0.5},
                     },
-                }
-            )
+                },
+            }
+        )
         assert response is not None
         payload = response["result"]["structuredContent"]
 
         self.assertFalse(payload["ok"])
-        self.assertIn("UXP is not connected", payload["message"])
-        self.assertTrue(payload["details"]["descriptor_fixture"]["available"])
+        self.assertIn(
+            "caller-supplied",
+            " ".join(payload["details"]["errors"]),
+        )
 
 
 if __name__ == "__main__":

@@ -5,6 +5,7 @@ import os
 import urllib.error
 import urllib.request
 from typing import Any
+from uuid import uuid4
 
 from starbridge_mcp.core.security import sanitize
 
@@ -57,5 +58,10 @@ def bridge_status(*, timeout: int = 3) -> dict[str, Any]:
 
 
 def rpc(method: str, params: dict[str, Any] | None = None, *, timeout: int = 8) -> dict[str, Any]:
-    payload = {"jsonrpc": "2.0", "id": "starbridge", "method": method, "params": params or {}}
+    payload = {
+        "jsonrpc": "2.0",
+        "id": f"starbridge-{uuid4().hex[:16]}",
+        "method": method,
+        "params": params or {},
+    }
     return _request("POST", "/rpc", payload, timeout=timeout)

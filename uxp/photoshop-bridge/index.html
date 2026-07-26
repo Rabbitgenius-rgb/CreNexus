@@ -29,6 +29,27 @@
       </dl>
     </section>
 
+    <section class="recorder-card" aria-labelledby="camera-raw-recorder-heading">
+      <h2 id="camera-raw-recorder-heading">Camera Raw 描述文件录制</h2>
+      <p>
+        仅在开发人员模式下使用。录制必须由本机用户点击启动；记录会先脱敏，
+        未经人工审查不会执行。
+      </p>
+      <div class="recorder-actions">
+        <button id="camera-raw-recorder-start" type="button">开始录制</button>
+        <button id="camera-raw-recorder-stop" class="secondary" type="button" disabled>
+          停止并审查
+        </button>
+      </div>
+      <p id="camera-raw-recorder-status" class="recorder-status" aria-live="polite"></p>
+      <textarea
+        id="camera-raw-recorder-output"
+        aria-label="已脱敏的 Camera Raw 待审查记录"
+        readonly
+        spellcheck="false"
+      ></textarea>
+    </section>
+
     <footer>
       <span>代理</span>
       <strong id="connection">连接中</strong>

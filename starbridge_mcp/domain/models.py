@@ -313,6 +313,8 @@ class CreativeJob:
     warnings: tuple[str, ...] = ()
     error: JobError | None = None
     evidence_id: str | None = None
+    idempotency_key: str | None = None
+    batch_item_id: str | None = None
 
     def __post_init__(self) -> None:
         validate_id(self.job_id, "jobId")
@@ -324,6 +326,10 @@ class CreativeJob:
             raise DomainValidationError("progress must be between 0 and 100")
         if self.evidence_id is not None:
             validate_id(self.evidence_id, "evidenceId")
+        if self.idempotency_key is not None and not SHA256_PATTERN.fullmatch(self.idempotency_key):
+            raise DomainValidationError("idempotencyKey must be a SHA-256 value")
+        if self.batch_item_id is not None:
+            validate_id(self.batch_item_id, "batchItemId")
         if self.status in TERMINAL_JOB_STATUSES and not self.completed_at:
             raise DomainValidationError("terminal jobs require completedAt")
         if self.status == "failed" and self.error is None:
@@ -346,6 +352,8 @@ class CreativeJob:
                 "warnings": list(self.warnings),
                 "error": self.error.to_dict() if self.error else None,
                 "evidenceId": self.evidence_id,
+                "idempotencyKey": self.idempotency_key,
+                "batchItemId": self.batch_item_id,
             }
         )
 
@@ -369,6 +377,14 @@ class CreativeJob:
             error=JobError.from_dict(error_payload) if isinstance(error_payload, dict) else None,
             evidence_id=(
                 str(payload["evidenceId"]) if payload.get("evidenceId") is not None else None
+            ),
+            idempotency_key=(
+                str(payload["idempotencyKey"])
+                if payload.get("idempotencyKey") is not None
+                else None
+            ),
+            batch_item_id=(
+                str(payload["batchItemId"]) if payload.get("batchItemId") is not None else None
             ),
         )
 

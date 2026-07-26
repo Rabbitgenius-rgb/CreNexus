@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-import os
+import re
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
@@ -10,7 +11,15 @@ CAMERA_RAW_NEXT_STEP = "Record a verified Camera Raw Filter descriptor with Alch
 CAMERA_RAW_METHOD = "ps.camera_raw.tune"
 CAMERA_RAW_PROTOCOL_VERSION = "camera_raw_tune.v1"
 CAMERA_RAW_OUTPUT_DIR = "examples/output/photoshop"
-CAMERA_RAW_DESCRIPTOR_ENV = "STARBRIDGE_CAMERA_RAW_DESCRIPTOR_FIXTURE"
+CAMERA_RAW_DESCRIPTOR_RELATIVE_PATH = Path(
+    "examples/photoshop_bridge/protocols/camera_raw_filter.v1.json"
+)
+# Set only after a real Photoshop recording has been reviewed and committed.
+CAMERA_RAW_DESCRIPTOR_SHA256 = ""
+CAMERA_RAW_PRIVATE_FILE_VALUE = re.compile(
+    r"(?:^|[\\/])[^\\/]+\.(?:psd|psb|jpg|jpeg|png|tif|tiff|dng|cr2|cr3|nef|arw|raf|raw)$",
+    re.IGNORECASE,
+)
 
 CAMERA_RAW_PRESETS: dict[str, dict[str, float]] = {
     "blue_artwork_clean": {
@@ -87,7 +96,7 @@ def _source_plan(arguments: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
         source_path = str(raw_source.get("path") or "").strip()
         if not source_path:
             return {}, ["source.path is required when source.mode is explicit_path"]
-        source["path"] = source_path
+        source["path_provided"] = True
         source["read_policy"] = "user_explicit_path_only"
     return source, []
 
@@ -122,6 +131,16 @@ def _output_plan(arguments: dict[str, Any], repo_root: Path) -> tuple[dict[str, 
 def build_camera_raw_tune_protocol(
     arguments: dict[str, Any], repo_root: Path
 ) -> tuple[dict[str, Any] | None, list[str]]:
+    if any(
+        key in arguments
+        for key in (
+            "descriptor",
+            "descriptors",
+            "descriptor_fixture_path",
+            "descriptor_fixture_verified",
+        )
+    ):
+        return None, ["caller-supplied Camera Raw descriptors or fixture paths are forbidden"]
     preset = str(arguments.get("preset") or "blue_artwork_clean")
     if preset not in CAMERA_RAW_PRESETS:
         return None, [f"preset must be one of: {', '.join(sorted(CAMERA_RAW_PRESETS))}"]
@@ -221,22 +240,83 @@ def render_descriptor_template(value: Any, context: dict[str, Any]) -> Any:
     return value
 
 
+def _fixture_template_is_safe(value: Any) -> bool:
+    if isinstance(value, list):
+        return len(value) <= 32 and all(_fixture_template_is_safe(item) for item in value)
+    if isinstance(value, dict):
+        if len(value) > 128:
+            return False
+        for key, item in value.items():
+            normalized = re.sub(r"[^a-z0-9]", "", str(key).lower())
+            if normalized in {
+                "documentid",
+                "layerid",
+                "filename",
+                "filepath",
+                "fullpath",
+                "path",
+                "targetpath",
+                "sourcepath",
+                "url",
+                "username",
+                "userid",
+                "sessionid",
+                "token",
+                "cookie",
+                "authorization",
+                "machineid",
+            } or normalized.endswith("filepath"):
+                return False
+            if key == "_target" and isinstance(item, list):
+                for target in item:
+                    if not isinstance(target, dict) or any(
+                        target_key in target for target_key in ("_id", "_index", "_name")
+                    ):
+                        return False
+            if not _fixture_template_is_safe(item):
+                return False
+        return True
+    if isinstance(value, str):
+        if len(value) > 512:
+            return False
+        if value.startswith("{{") and value.endswith("}}"):
+            variable = value[2:-2].strip()
+            return (
+                variable.startswith("params.")
+                and variable.removeprefix("params.") in CAMERA_RAW_PARAM_RANGES
+            )
+        lowered = value.lower()
+        return not (
+            ":\\" in value
+            or value.startswith("\\\\")
+            or lowered.startswith(("file://", "http://", "https://", "/users/", "/home/"))
+            or CAMERA_RAW_PRIVATE_FILE_VALUE.search(value) is not None
+        )
+    return value is None or isinstance(value, (bool, int, float))
+
+
 def load_verified_descriptor_fixture(
-    arguments: dict[str, Any], plan: dict[str, Any]
+    repo_root: Path, plan: dict[str, Any]
 ) -> tuple[dict[str, Any] | None, list[str]]:
-    fixture_value = arguments.get("descriptor_fixture_path") or os.environ.get(
-        CAMERA_RAW_DESCRIPTOR_ENV
-    )
-    if not fixture_value:
+    fixture_path = (repo_root / CAMERA_RAW_DESCRIPTOR_RELATIVE_PATH).resolve()
+    expected_path = (repo_root.resolve() / CAMERA_RAW_DESCRIPTOR_RELATIVE_PATH).resolve()
+    if fixture_path != expected_path:
+        return None, ["bundled descriptor fixture path is invalid"]
+    if not fixture_path.exists():
         return None, []
-    fixture_path = Path(str(fixture_value)).expanduser()
-    if not fixture_path.exists() or not fixture_path.is_file():
-        return None, ["descriptor fixture path does not exist or is not a file"]
+    if not fixture_path.is_file():
+        return None, ["bundled descriptor fixture is not a file"]
+    if not CAMERA_RAW_DESCRIPTOR_SHA256:
+        return None, ["bundled descriptor fixture hash has not been pinned after review"]
     try:
-        fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+        fixture_bytes = fixture_path.read_bytes()
+        fixture = json.loads(fixture_bytes.decode("utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        return None, [f"descriptor fixture could not be read: {type(exc).__name__}"]
+        return None, [f"bundled descriptor fixture could not be read: {type(exc).__name__}"]
     errors: list[str] = []
+    actual_sha256 = sha256(fixture_bytes).hexdigest()
+    if actual_sha256 != CAMERA_RAW_DESCRIPTOR_SHA256:
+        errors.append("bundled descriptor fixture hash mismatch")
     if fixture.get("protocol_version") != CAMERA_RAW_PROTOCOL_VERSION:
         errors.append("descriptor fixture protocol_version mismatch")
     if fixture.get("method") != CAMERA_RAW_METHOD:
@@ -245,9 +325,14 @@ def load_verified_descriptor_fixture(
         errors.append("descriptor fixture descriptor_kind must be camera_raw_filter")
     if fixture.get("verified") is not True:
         errors.append("descriptor fixture must set verified=true")
+    fixture_id = str(fixture.get("fixture_id") or "")
+    if not fixture_id or len(fixture_id) > 96:
+        errors.append("descriptor fixture fixture_id is missing or invalid")
     raw_descriptors = fixture.get("descriptors")
     if not isinstance(raw_descriptors, list) or not raw_descriptors:
         errors.append("descriptor fixture must include a non-empty descriptors list")
+    elif not _fixture_template_is_safe(raw_descriptors):
+        errors.append("descriptor fixture contains an unsafe target, path, or template")
     if errors:
         return None, errors
     try:
@@ -266,6 +351,7 @@ def load_verified_descriptor_fixture(
         "loaded": True,
         "verified": True,
         "descriptor_kind": "camera_raw_filter",
+        "fixture_id": fixture_id,
+        "fixture_sha256": actual_sha256,
         "descriptor_count": len(descriptors),
-        "descriptors": descriptors,
     }, []

@@ -23,16 +23,40 @@ if ([string]::IsNullOrWhiteSpace($TargetTriple)) {
 }
 $desktopRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $executable = Join-Path $desktopRoot "src-tauri\binaries\starbridge-sidecar-$TargetTriple.exe"
-if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
+
+function Get-Vector60Runtime {
+    param([Parameter(Mandatory = $true)][string]$Executable)
+
+    $raw = (& $Executable --vector60-runtime-check 2>$null | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($raw)) {
+        return $null
+    }
+    try {
+        $runtime = $raw | ConvertFrom-Json -ErrorAction Stop
+        if ($runtime.ok) {
+            return $runtime
+        }
+    }
+    catch {
+        return $null
+    }
+    return $null
+}
+
+$vector60Runtime = $null
+if (Test-Path -LiteralPath $executable -PathType Leaf) {
+    $vector60Runtime = Get-Vector60Runtime -Executable $executable
+}
+if (-not $vector60Runtime) {
     $buildScript = Join-Path $PSScriptRoot "Build-Sidecar.ps1"
     & $buildScript -TargetTriple $TargetTriple
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $executable -PathType Leaf)) {
         throw "The staged sidecar could not be built for $TargetTriple."
     }
+    $vector60Runtime = Get-Vector60Runtime -Executable $executable
 }
 
-$vector60Runtime = (& $executable --vector60-runtime-check | Out-String).Trim() | ConvertFrom-Json
-if ($LASTEXITCODE -ne 0 -or -not $vector60Runtime.ok) {
+if (-not $vector60Runtime) {
     throw "The packaged sidecar failed its Vector60 Python runtime check."
 }
 if ($vector60Runtime.versions.vtracer -ne "0.6.15" -or
