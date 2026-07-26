@@ -256,6 +256,7 @@ jobs:
     env:
       PYTHONUTF8: "1"
       PYTHONIOENCODING: "utf-8"
+      STARBRIDGE_REAL_DARWIN_SIDECAR_ACCEPTANCE: "1"
     steps:
       - name: Checkout
         uses: actions/checkout@v7

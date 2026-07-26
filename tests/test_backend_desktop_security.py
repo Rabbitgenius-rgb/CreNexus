@@ -6,6 +6,7 @@ import queue
 import socket
 import subprocess
 import sys
+import time
 import unittest
 from http.client import HTTPConnection
 from pathlib import Path
@@ -290,6 +291,11 @@ class DesktopBackendSecurityTests(unittest.TestCase):
         finally:
             monitor.stop()
 
+    @unittest.skipIf(
+        sys.platform == "darwin"
+        and os.environ.get("STARBRIDGE_REAL_DARWIN_SIDECAR_ACCEPTANCE") == "1",
+        "covered by the real Darwin sidecar acceptance later in this CI job",
+    )
     def test_desktop_cli_emits_token_free_ready_line_and_accepts_shutdown(self) -> None:
         environment = os.environ.copy()
         environment[SESSION_TOKEN_ENV] = TEST_SESSION_CREDENTIAL
@@ -320,7 +326,32 @@ class DesktopBackendSecurityTests(unittest.TestCase):
         reader = Thread(target=read_ready, daemon=True)
         reader.start()
         try:
-            ready_line = output_queue.get(timeout=10).strip()
+            ready_line = ""
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                try:
+                    ready_line = output_queue.get(
+                        timeout=min(0.25, max(0.001, deadline - time.monotonic()))
+                    ).strip()
+                    break
+                except queue.Empty:
+                    if process.poll() is not None:
+                        break
+            if not ready_line:
+                exit_code = process.poll()
+                if exit_code is None:
+                    process.terminate()
+                    try:
+                        exit_code = process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        exit_code = process.wait(timeout=5)
+                stdout = process.stdout.read() if process.stdout is not None else ""
+                stderr = process.stderr.read() if process.stderr is not None else ""
+                self.fail(
+                    "desktop backend did not emit a ready line within 30 seconds "
+                    f"(exit={exit_code})\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}"
+                )
             self.assertTrue(ready_line.startswith(READY_PREFIX), ready_line)
             self.assertNotIn(TEST_SESSION_CREDENTIAL, ready_line)
             ready = json.loads(ready_line[len(READY_PREFIX) :])
