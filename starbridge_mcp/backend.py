@@ -45,12 +45,6 @@ from starbridge_mcp.models import (
     ModelRuntimeError,
 )
 from starbridge_mcp.storage import AssetStore, EvidenceStore, JobStore, ProjectStore
-from starbridge_mcp.vectorization.engine import (
-    RunConfig,
-    VectorizationError,
-    file_sha256,
-    run_vectorization,
-)
 from starbridge_mcp.workflows.comfyui_generation_pipeline import (
     WORKFLOW_ID as COMFYUI_GENERATION_WORKFLOW_ID,
 )
@@ -65,14 +59,17 @@ from starbridge_mcp.workflows.photoshop_production_pipeline import (
     register_photoshop_production_workflow,
 )
 from starbridge_mcp.workflows.registry import WorkflowRegistry
-from starbridge_mcp.workflows.vector_delivery_pipeline import (
-    WORKFLOW_ID as VECTOR_DELIVERY_WORKFLOW_ID,
-)
-from starbridge_mcp.workflows.vector_delivery_pipeline import (
-    register_vector_delivery_workflow,
-)
 
 JsonObject = dict[str, Any]
+
+
+def run_vectorization(config: Any) -> JsonObject:
+    """Lazy compatibility hook for callers that patch the backend entry point."""
+    from starbridge_mcp.vectorization.engine import run_vectorization as execute
+
+    return execute(config)
+
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_STATIC_ROOT = REPO_ROOT / "examples" / "starbridge_frontend" / "dist"
 LEGACY_HISTORY_PATH = REPO_ROOT / "examples" / "output" / "app_history" / "history.json"
@@ -83,6 +80,7 @@ READY_PREFIX = "STARBRIDGE_READY "
 MAX_REQUEST_BODY_BYTES = 1024 * 1024
 VECTOR_INPUT_MAX_BYTES = 128 * 1024 * 1024
 VECTOR_MODES = frozenset({"artisan", "smart", "lightweight", "exact", "editable-99"})
+VECTOR_DELIVERY_WORKFLOW_ID = "vector-delivery-v1"
 DEFAULT_DEV_ORIGINS = (
     "http://127.0.0.1:5173",
     "http://localhost:5173",
@@ -236,7 +234,6 @@ class KORYAOBackend:
         self.asset_store = AssetStore(self.app_paths.projects)
         self.evidence_store = EvidenceStore(self.app_paths.evidence)
         self.workflow_registry = WorkflowRegistry()
-        register_vector_delivery_workflow(self.workflow_registry)
         register_comfyui_generation_workflow(self.workflow_registry)
         register_photoshop_production_workflow(self.workflow_registry)
         self.workflow_engine = WorkflowEngine(
@@ -480,6 +477,8 @@ class KORYAOBackend:
 
     @staticmethod
     def _image_preview_data_url(path: Path) -> tuple[str, int, int]:
+        from starbridge_mcp.vectorization.engine import VectorizationError
+
         try:
             with Image.open(path) as opened:
                 if opened.format not in {"PNG", "JPEG"}:
@@ -513,6 +512,8 @@ class KORYAOBackend:
                 "所选文件不是可读取的 PNG 或 JPEG 图片。",
                 next_steps=["重新选择 PNG 或 JPEG 图片。"],
             )
+        from starbridge_mcp.vectorization.engine import VectorizationError, file_sha256
+
         try:
             if path.stat().st_size > VECTOR_INPUT_MAX_BYTES:
                 return self._error(
@@ -627,6 +628,8 @@ class KORYAOBackend:
         reference_id = f"desktop-{str(selection['source_sha256'])[:10]}-{job_id[-6:]}"
         output_root = (self.app_paths.data / "vectorization").resolve()
         output_dir = output_root / reference_id / mode
+
+        from starbridge_mcp.vectorization.engine import RunConfig, VectorizationError
 
         def optional_int(key: str) -> int | None:
             value = parameters.get(key)
@@ -891,12 +894,36 @@ class KORYAOBackend:
             },
         )
 
+    def _ensure_vector_delivery_workflow(self) -> None:
+        with self._vector_lock:
+            if VECTOR_DELIVERY_WORKFLOW_ID in self.workflow_registry.workflow_ids():
+                return
+            from starbridge_mcp.adapters.local import LocalDeliveryAdapter, UserReviewAdapter
+            from starbridge_mcp.adapters.vectorization import VectorizationAdapter
+            from starbridge_mcp.workflows.vector_delivery_pipeline import (
+                create_vector_delivery_plan,
+            )
+
+            for adapter in (
+                VectorizationAdapter(),
+                UserReviewAdapter(),
+                LocalDeliveryAdapter(),
+            ):
+                if adapter.adapter_id not in self.workflow_registry.adapter_ids():
+                    self.workflow_registry.register_adapter(adapter)
+            self.workflow_registry.register_workflow(
+                VECTOR_DELIVERY_WORKFLOW_ID,
+                create_vector_delivery_plan,
+            )
+
     def _create_project(self, body: JsonObject) -> BackendResponse:
         project_name = body.get("projectName") or body.get("project_name")
         workflow_id = body.get("workflowId") or body.get("workflow_id")
         description = body.get("description") or ""
         if not isinstance(project_name, str) or not project_name.strip():
             return self._error(400, "project_name_required", "请输入项目名称。")
+        if workflow_id == VECTOR_DELIVERY_WORKFLOW_ID:
+            self._ensure_vector_delivery_workflow()
         if workflow_id not in self.workflow_registry.workflow_ids():
             return self._error(400, "workflow_not_available", "请选择当前可用的创意工作流。")
         if not isinstance(description, str):
@@ -959,6 +986,8 @@ class KORYAOBackend:
                 "job_fields_required",
                 "创建任务需要项目和工作流。",
             )
+        if workflow_id == VECTOR_DELIVERY_WORKFLOW_ID:
+            self._ensure_vector_delivery_workflow()
         try:
             project = self.project_store.get(str(project_id))
             if workflow_id == VECTOR_DELIVERY_WORKFLOW_ID:
@@ -1097,6 +1126,9 @@ class KORYAOBackend:
         approval_ref = body.get("approvalRef") or body.get("approval_ref")
         confirm_execute = body.get("confirmExecute") is True or body.get("confirm_execute") is True
         try:
+            job = self.job_store.get(job_id)
+            if job.workflow_id == VECTOR_DELIVERY_WORKFLOW_ID:
+                self._ensure_vector_delivery_workflow()
             result = self.workflow_engine.run(
                 job_id,
                 approval_ref=str(approval_ref) if isinstance(approval_ref, str) else None,

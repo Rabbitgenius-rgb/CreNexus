@@ -291,6 +291,108 @@ class DesktopBackendSecurityTests(unittest.TestCase):
         finally:
             monitor.stop()
 
+    def test_backend_import_and_init_do_not_import_cv2(self) -> None:
+        import_guard = self.root / "startup import guard"
+        import_guard.mkdir()
+        cv2_trace = import_guard / "cv2-imported.trace"
+        (import_guard / "cv2.py").write_text(
+            "from pathlib import Path\n"
+            f"Path({str(cv2_trace)!r}).write_text('imported before init', encoding='utf-8')\n"
+            "raise RuntimeError('cv2 imported before backend init completed')\n",
+            encoding="utf-8",
+        )
+        environment = os.environ.copy()
+        environment[APP_DATA_ENV] = str(self.root / "cold init app data")
+        environment["PYTHONUTF8"] = "1"
+        environment["PYTHONPATH"] = os.pathsep.join(
+            filter(None, (str(import_guard), environment.get("PYTHONPATH")))
+        )
+
+        process = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "from starbridge_mcp.backend import KORYAOBackend\n"
+                    "KORYAOBackend()\n"
+                    "print('STARBRIDGE_BACKEND_INITIALIZED', flush=True)\n"
+                ),
+            ],
+            cwd=Path(__file__).resolve().parents[1],
+            env=environment,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=10,
+            check=False,
+        )
+
+        self.assertFalse(cv2_trace.exists(), "cv2 was imported before backend init completed")
+        self.assertEqual(
+            0,
+            process.returncode,
+            f"STDOUT:\n{process.stdout}\nSTDERR:\n{process.stderr}",
+        )
+        self.assertIn("STARBRIDGE_BACKEND_INITIALIZED", process.stdout.splitlines())
+
+    def test_reloaded_backend_restores_vector_workflow_before_running_queued_job(self) -> None:
+        from PIL import Image
+
+        app_data = self.root / "queued vector restart"
+        source = self.root / "queued-source.png"
+        Image.new("RGBA", (4, 4), (255, 0, 0, 255)).save(source)
+
+        initial = KORYAOBackend(app_data_dir=app_data)
+        created_project = initial.route(
+            "POST",
+            "/api/projects",
+            json.dumps(
+                {
+                    "projectName": "重启后继续的矢量任务",
+                    "workflowId": "vector-delivery-v1",
+                }
+            ).encode("utf-8"),
+        )
+        self.assertEqual(201, created_project.status)
+        project_id = created_project.body["data"]["projectId"]
+        imported = initial.route(
+            "POST",
+            f"/api/projects/{project_id}/assets",
+            json.dumps({"inputPath": str(source), "confirmImport": True}).encode("utf-8"),
+        )
+        self.assertEqual(201, imported.status)
+        created_job = initial.route(
+            "POST",
+            "/api/jobs",
+            json.dumps(
+                {
+                    "projectId": project_id,
+                    "workflowId": "vector-delivery-v1",
+                    "sourceAssetId": imported.body["data"]["asset"]["assetId"],
+                    "drawingMode": "exact",
+                }
+            ).encode("utf-8"),
+        )
+        self.assertEqual(201, created_job.status)
+        self.assertEqual("queued", created_job.body["data"]["status"])
+        job_id = created_job.body["data"]["jobId"]
+
+        reloaded = KORYAOBackend(app_data_dir=app_data)
+        self.assertNotIn("vector-delivery-v1", reloaded.workflow_registry.workflow_ids())
+        missing = reloaded.route("POST", "/api/jobs/job-does-not-exist/run", b"{}")
+        self.assertEqual(404, missing.status)
+        self.assertEqual("job_not_found", missing.body["error"]["code"])
+
+        result = reloaded.route("POST", f"/api/jobs/{job_id}/run", b"{}")
+
+        self.assertEqual(202, result.status, result.body)
+        self.assertEqual("needs_user", result.body["data"]["job"]["status"])
+        self.assertNotEqual(
+            "adapter_not_registered",
+            (result.body["data"]["job"].get("error") or {}).get("code"),
+        )
+        self.assertIn("vector-delivery-v1", reloaded.workflow_registry.workflow_ids())
+
     @unittest.skipIf(
         sys.platform == "darwin"
         and os.environ.get("STARBRIDGE_REAL_DARWIN_SIDECAR_ACCEPTANCE") == "1",
