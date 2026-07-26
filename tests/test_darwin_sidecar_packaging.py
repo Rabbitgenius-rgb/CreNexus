@@ -1180,9 +1180,10 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
 
             summary = sidecar_builder._scan_support_tree(
                 support,
-                allow_internal_file_symlinks=True,
+                allow_internal_symlinks=True,
             )
             self.assertEqual(1, summary["support_symlink_count"])
+            self.assertEqual(0, summary["support_directory_symlink_count"])
             with self.assertRaises(sidecar_builder.SidecarBuildError):
                 sidecar_builder._scan_support_tree(support)
 
@@ -1192,7 +1193,172 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
             with self.assertRaises(sidecar_builder.SidecarBuildError):
                 sidecar_builder._scan_support_tree(
                     support,
-                    allow_internal_file_symlinks=True,
+                    allow_internal_symlinks=True,
+                )
+
+    @unittest.skipIf(os.name == "nt", "symlink checks require POSIX")
+    def test_support_tree_accepts_internal_framework_directory_symlink_without_following(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory(prefix="KORYAO framework support symlink ") as temporary:
+            support = Path(temporary) / "_internal-aarch64-apple-darwin"
+            versions = support / "Python.framework" / "Versions"
+            version = versions / "3.12"
+            version.mkdir(parents=True)
+            runtime = version / "runtime.so"
+            runtime.write_bytes(b"\xcf\xfa\xed\xfe")
+            (version / "runtime-alias.dylib").symlink_to(runtime.name)
+            (versions / "Current").symlink_to("3.12", target_is_directory=True)
+
+            summary = sidecar_builder._scan_support_tree(
+                support,
+                allow_internal_symlinks=True,
+            )
+            payload_groups = sidecar_builder._support_payload_groups(support)
+            logical_file_count = sum(len(logical_paths) for _, logical_paths in payload_groups)
+
+            self.assertEqual(2, summary["support_file_count"])
+            self.assertEqual(2, summary["native_extension_count"])
+            self.assertEqual(1, summary["support_symlink_count"])
+            self.assertEqual(1, summary["support_directory_symlink_count"])
+            self.assertEqual(1, len(payload_groups))
+            self.assertEqual(2, logical_file_count)
+            self.assertEqual(
+                logical_file_count,
+                len(payload_groups) + summary["support_symlink_count"],
+            )
+
+    @unittest.skipIf(os.name == "nt", "symlink checks require POSIX")
+    def test_support_directory_symlinks_reject_ancestor_graph_back_edges(self) -> None:
+        cases = (
+            (Path("link"), "."),
+            (Path("nested") / "deeper" / "up", "../.."),
+        )
+        for relative_link, raw_target in cases:
+            with (
+                self.subTest(relative_link=relative_link, raw_target=raw_target),
+                tempfile.TemporaryDirectory(prefix="KORYAO ancestor support symlink ") as temporary,
+            ):
+                support = Path(temporary) / "_internal-aarch64-apple-darwin"
+                support.mkdir()
+                (support / "runtime.so").write_bytes(b"\xcf\xfa\xed\xfe")
+                link = support / relative_link
+                link.parent.mkdir(parents=True, exist_ok=True)
+                link.symlink_to(raw_target, target_is_directory=True)
+
+                with self.assertRaises(sidecar_builder.SidecarBuildError):
+                    sidecar_builder._scan_support_tree(
+                        support,
+                        allow_internal_symlinks=True,
+                    )
+
+    @unittest.skipIf(os.name == "nt", "symlink checks require POSIX")
+    def test_support_directory_symlinks_allow_sibling_descendant_and_chain_targets(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory(prefix="KORYAO safe support symlink ") as temporary:
+            support = Path(temporary) / "_internal-aarch64-apple-darwin"
+            versions = support / "Python.framework" / "Versions"
+            version = versions / "3.12"
+            descendant = support / "payloads" / "runtime"
+            version.mkdir(parents=True)
+            descendant.mkdir(parents=True)
+            (version / "runtime.so").write_bytes(b"\xcf\xfa\xed\xfe")
+            (versions / "Stable").symlink_to("3.12", target_is_directory=True)
+            (versions / "Current").symlink_to("Stable", target_is_directory=True)
+            (support / "Runtime").symlink_to(
+                "payloads/runtime",
+                target_is_directory=True,
+            )
+
+            summary = sidecar_builder._scan_support_tree(
+                support,
+                allow_internal_symlinks=True,
+            )
+
+            self.assertEqual(1, summary["support_file_count"])
+            self.assertEqual(3, summary["support_directory_symlink_count"])
+
+    @unittest.skipIf(os.name == "nt", "symlink checks require POSIX")
+    def test_support_file_and_directory_symlink_targets_fail_closed(self) -> None:
+        mutations = (
+            "absolute_internal",
+            "escaping",
+            "broken",
+            "loop",
+            "backslash",
+        )
+        for target_kind in ("file", "directory"):
+            for mutation in mutations:
+                with (
+                    self.subTest(target_kind=target_kind, mutation=mutation),
+                    tempfile.TemporaryDirectory(
+                        prefix="KORYAO adversarial support symlink "
+                    ) as temporary,
+                ):
+                    root = Path(temporary)
+                    support = root / "_internal-aarch64-apple-darwin"
+                    support.mkdir()
+                    (support / "runtime.so").write_bytes(b"\xcf\xfa\xed\xfe")
+                    link = support / f"{target_kind}-{mutation}"
+
+                    if mutation == "absolute_internal":
+                        target = support / f"absolute-{target_kind}"
+                        raw_target = os.fspath(target.resolve(strict=False))
+                    elif mutation == "escaping":
+                        target = root / f"outside-{target_kind}"
+                        raw_target = os.path.relpath(target, support)
+                    elif mutation == "broken":
+                        target = support / f"missing-{target_kind}"
+                        raw_target = target.name
+                    elif mutation == "loop":
+                        target = link
+                        raw_target = link.name
+                    else:
+                        target = support / f"backslash\\{target_kind}"
+                        raw_target = target.name
+
+                    if mutation not in {"broken", "loop"}:
+                        if target_kind == "directory":
+                            target.mkdir()
+                        else:
+                            target.write_bytes(b"payload")
+                    link.symlink_to(
+                        raw_target,
+                        target_is_directory=target_kind == "directory",
+                    )
+
+                    with self.assertRaises(sidecar_builder.SidecarBuildError):
+                        sidecar_builder._scan_support_tree(
+                            support,
+                            allow_internal_symlinks=True,
+                        )
+
+    @unittest.skipUnless(
+        os.name != "nt" and hasattr(os, "mkfifo"),
+        "special-target symlink checks require POSIX",
+    )
+    def test_support_symlink_rejects_internal_special_target(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="KORYAO special support symlink ") as temporary:
+            support = Path(temporary) / "_internal-aarch64-apple-darwin"
+            support.mkdir()
+            (support / "runtime.so").write_bytes(b"\xcf\xfa\xed\xfe")
+            special = support / "special-target"
+            os.mkfifo(special)
+            link = support / "special-link"
+            link.symlink_to(special.name)
+
+            with (
+                mock.patch.object(
+                    sidecar_builder.os,
+                    "walk",
+                    return_value=[(os.fspath(support), [], [link.name])],
+                ),
+                self.assertRaises(sidecar_builder.SidecarBuildError),
+            ):
+                sidecar_builder._scan_support_tree(
+                    support,
+                    allow_internal_symlinks=True,
                 )
 
     def test_target_families_reject_extensionless_numbered_copies(self) -> None:

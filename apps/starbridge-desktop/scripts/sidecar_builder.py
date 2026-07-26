@@ -658,10 +658,37 @@ def check_vector60_runtime(executable: Path) -> dict[str, object]:
     return payload
 
 
+def _resolve_internal_support_symlink(
+    candidate: Path,
+    physical_root: Path,
+) -> tuple[Path, os.stat_result]:
+    try:
+        raw_target = os.readlink(candidate)
+    except OSError as exc:
+        raise SidecarBuildError("Could not read a PyInstaller support symlink.") from exc
+    if os.path.isabs(raw_target) or "\\" in raw_target:
+        raise SidecarBuildError(
+            "PyInstaller support symlink targets must be relative paths without backslashes."
+        )
+    try:
+        resolved = candidate.resolve(strict=True)
+        resolved.relative_to(physical_root)
+        target_metadata = os.lstat(resolved)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise SidecarBuildError(
+            "The PyInstaller support tree contains an escaping, broken, or cyclic symlink."
+        ) from exc
+    if not (stat.S_ISREG(target_metadata.st_mode) or stat.S_ISDIR(target_metadata.st_mode)):
+        raise SidecarBuildError(
+            "The PyInstaller support symlink does not target a regular file or real directory."
+        )
+    return resolved, target_metadata
+
+
 def _scan_support_tree(
     directory: Path,
     *,
-    allow_internal_file_symlinks: bool = False,
+    allow_internal_symlinks: bool = False,
 ) -> dict[str, int]:
     try:
         root_metadata = os.lstat(directory)
@@ -673,6 +700,7 @@ def _scan_support_tree(
     support_file_count = 0
     native_extension_count = 0
     support_symlink_count = 0
+    support_directory_symlink_count = 0
     physical_root = directory.resolve(strict=True)
     for current_root, directory_names, file_names in os.walk(
         directory, topdown=True, followlinks=False
@@ -685,10 +713,32 @@ def _scan_support_tree(
                 )
             candidate = current / name
             metadata = os.lstat(candidate)
-            if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
-                raise SidecarBuildError(
-                    "The sidecar support tree contains a directory symlink or non-directory node."
+            if stat.S_ISLNK(metadata.st_mode):
+                if not allow_internal_symlinks:
+                    raise SidecarBuildError("The staged sidecar support tree contains a symlink.")
+                resolved, target_metadata = _resolve_internal_support_symlink(
+                    candidate,
+                    physical_root,
                 )
+                if not stat.S_ISDIR(target_metadata.st_mode):
+                    raise SidecarBuildError(
+                        "The PyInstaller support directory symlink does not target "
+                        "a real directory."
+                    )
+                try:
+                    physical_parent = candidate.parent.resolve(strict=True)
+                except (OSError, RuntimeError) as exc:
+                    raise SidecarBuildError(
+                        "Could not resolve a PyInstaller support symlink parent."
+                    ) from exc
+                if resolved == physical_parent or resolved in physical_parent.parents:
+                    raise SidecarBuildError(
+                        "The PyInstaller support directory symlink targets an ancestor "
+                        "and creates a cycle."
+                    )
+                support_directory_symlink_count += 1
+            elif not stat.S_ISDIR(metadata.st_mode):
+                raise SidecarBuildError("The sidecar support tree contains a non-directory node.")
         for name in file_names:
             if COLLISION_COPY_PATTERN.search(name):
                 raise SidecarBuildError("The sidecar support tree contains a collision-copy file.")
@@ -696,16 +746,13 @@ def _scan_support_tree(
             metadata = os.lstat(candidate)
             payload_path = candidate
             if stat.S_ISLNK(metadata.st_mode):
-                if not allow_internal_file_symlinks:
+                if not allow_internal_symlinks:
                     raise SidecarBuildError("The staged sidecar support tree contains a symlink.")
-                try:
-                    resolved = candidate.resolve(strict=True)
-                    resolved.relative_to(physical_root)
-                except (FileNotFoundError, ValueError) as exc:
-                    raise SidecarBuildError(
-                        "The PyInstaller support tree contains an escaping or broken symlink."
-                    ) from exc
-                if not resolved.is_file():
+                resolved, target_metadata = _resolve_internal_support_symlink(
+                    candidate,
+                    physical_root,
+                )
+                if not stat.S_ISREG(target_metadata.st_mode):
                     raise SidecarBuildError(
                         "The PyInstaller support symlink does not target a regular file."
                     )
@@ -737,6 +784,7 @@ def _scan_support_tree(
         "support_file_count": support_file_count,
         "native_extension_count": native_extension_count,
         "support_symlink_count": support_symlink_count,
+        "support_directory_symlink_count": support_directory_symlink_count,
     }
 
 
@@ -776,7 +824,7 @@ def _replace_staged_pair(
     )
     _scan_support_tree(
         source_support_directory,
-        allow_internal_file_symlinks=True,
+        allow_internal_symlinks=True,
     )
     _reject_target_collision_copies(layout)
 
@@ -820,7 +868,7 @@ def _replace_staged_pair(
         shutil.copytree(source_support_directory, candidate_support, symlinks=True)
         _scan_support_tree(
             candidate_support,
-            allow_internal_file_symlinks=True,
+            allow_internal_symlinks=True,
         )
         _validate_path_chain(
             candidate_executable,
@@ -1172,7 +1220,7 @@ def verify_staged_artifact(layout: BuildLayout) -> dict[str, object]:
 
     support = _scan_support_tree(
         layout.staged_support_directory,
-        allow_internal_file_symlinks=True,
+        allow_internal_symlinks=True,
     )
     expected_architecture = EXPECTED_DARWIN_ARCHITECTURE[layout.target_triple]
     file_tool = _required_tool("file")
@@ -1391,7 +1439,7 @@ def _build_sidecar_locked(
         )
         _scan_support_tree(
             generation_layout.source_support_directory,
-            allow_internal_file_symlinks=True,
+            allow_internal_symlinks=True,
         )
         check_vector60_runtime(generation_layout.source_executable)
 
