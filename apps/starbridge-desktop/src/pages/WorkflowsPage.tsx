@@ -29,7 +29,6 @@ export function WorkflowsPage({ client, runtimeReady, initialProjectId, onOpenPr
   const [projectId, setProjectId] = useState(initialProjectId ?? "");
   const [assetId, setAssetId] = useState("");
   const [drawingMode, setDrawingMode] = useState<DrawingMode>("exact");
-  const [exactMaxDimension, setExactMaxDimension] = useState(1024);
   const [exactMaxSvgSizeMb, setExactMaxSvgSizeMb] = useState(128);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -78,7 +77,7 @@ export function WorkflowsPage({ client, runtimeReady, initialProjectId, onOpenPr
         workflowId: "vector-delivery-v1",
         sourceAssetId: assetId,
         drawingMode,
-        parameters: { exact: { maxDimension: exactMaxDimension, maxSvgSizeMb: exactMaxSvgSizeMb } },
+        parameters: { exact: { maxSvgSizeMb: exactMaxSvgSizeMb } },
       });
       onOpenJob(job.jobId, job.projectId);
     } catch (reason) {
@@ -126,10 +125,9 @@ export function WorkflowsPage({ client, runtimeReady, initialProjectId, onOpenPr
             <span className={`state-label ${drawingMode === "exact" ? "planned" : "neutral"}`}>{drawingMode === "exact" ? "当前主模式" : "固定基线"}</span>
           </div>
           <div className="form-grid">
-            <label>像素重建最长边<select aria-label="像素重建最长边" value={exactMaxDimension} onChange={(event) => setExactMaxDimension(Number(event.target.value))}><option value={1024}>1024 像素（推荐）</option><option value={512}>512 像素（复杂大图）</option><option value={1600}>1600 像素（更高细节）</option><option value={2048}>2048 像素（可能较慢）</option><option value={0}>原始尺寸（可能超出安全上限）</option></select></label>
             <label>SVG 安全上限<select aria-label="SVG 安全上限" value={exactMaxSvgSizeMb} onChange={(event) => setExactMaxSvgSizeMb(Number(event.target.value))}><option value={64}>64 MB（兼容优先）</option><option value={128}>128 MB（推荐）</option><option value={256}>256 MB（大型文件）</option></select></label>
           </div>
-          <p className="truth-note">像素重建会把本地工作副本的 RGBA 像素转换为真实、无嵌入位图的 SVG 几何。源图片不会被缩小或覆盖；只有选择其他模式时，才会继续生成第二份绘制型矢量。</p>
+          <p className="truth-note">像素重建始终按原始尺寸把 RGBA 像素转换为真实、无嵌入位图的 SVG 几何。超过安全像素或复杂度上限时会直接停止，不会缩小后冒充像素一致；只有选择其他模式时，才会继续生成第二份绘制型矢量。</p>
         </section>
         <section className="record-panel workflow-truth-panel">
           <div className="section-heading"><div><span>安全边界</span><h3>写入会分段确认</h3></div></div>

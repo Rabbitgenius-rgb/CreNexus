@@ -1,7 +1,9 @@
 # Generated sidecar staging directory
 
 Windows 使用 `Build-Sidecar.ps1`；Darwin 使用 `Build-Sidecar.sh`。两者都会在这里
-staging Tauri `externalBin` 所需的 target-triple 可执行文件。生成物均被 Git 忽略。
+staging target-triple 可执行文件。Windows 通过 Tauri `externalBin` 打包；Stage 5
+的 macOS arm64 `.app` 则把 executable 与 support sibling 一起作为 Resources
+打包。生成物均被 Git 忽略。
 
 Expected Windows development layout:
 
@@ -42,11 +44,17 @@ triple 的 build root 后执行 `--clean`。同一 triple 的构建/staging 使�
 binaries、build 或 build venv 旁出现同步/冲突编号副本时 fail closed，不复用陈旧
 Analysis 或混入另一平台产物。
 
-Tauri v2 的 `externalBin` 会把可执行文件复制到目标目录根，而 list resource glob
-会保留 `binaries/` 前缀，无法把动态 triple 的完整 PyInstaller support 树映射到
-可执行文件同级。为避免产生“配置可解析但运行必失败”的假阳性，macOS overlay 在
-Stage 4 明确保持 `bundle.active=false`，不声明 `externalBin` 或 `resources`。
-本阶段只验证 builder/staging 与直接 sidecar 协议；真实 Tauri dev/no-bundle、
-`.app` 布局及应用内启动属于 Stage 5，尚未验证。
+Stage 5 的 macOS overlay 仅面向当前实机 `aarch64-apple-darwin`：启用本地 `.app`
+bundle，不使用会把 executable 移到 `Contents/MacOS` 的 `externalBin`。固定的真实
+`starbridge-sidecar-aarch64-apple-darwin` 与对应 `_internal-aarch64-apple-darwin`
+support 树都作为 Resources 打包并保持相邻；Rust runtime 只从编译期固定的
+`resource_dir` 路径启动它。验收时必须核对 `.app` 内 executable 与 target-specific
+support 目录实际同级，并真实验证应用内启动、认证 bootstrap、一次有限恢复、
+手动 restart、正常 Quit、端口释放与零孤儿进程；仅通过配置 schema 或直接
+sidecar 测试不能代替这项 runtime smoke。
+
+当前没有 `x86_64` 实机 `.app` 验证，也不提供或声称 universal binary。代码签名、
+notarization、公开 release、安装包和 CI 均不属于本阶段，尚未支持或验证；当前
+macOS `.app` 只作为 Apple Silicon 本地 runtime smoke 候选。
 
 不要提交生成的可执行文件、`_internal*`、DLL/dylib、Python bytecode 或本机路径。

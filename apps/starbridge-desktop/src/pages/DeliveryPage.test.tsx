@@ -78,7 +78,7 @@ describe("Adobe delivery export", () => {
       listAdobeExports,
     } as unknown as KORYAOClient;
 
-    render(<DeliveryPage client={client} initialProjectId="project-test" />);
+    render(<DeliveryPage client={client} initialProjectId="project-test" nativeAdobeExport />);
     await screen.findByRole("option", { name: /vector\.svg/ });
     expect(await screen.findByText("historical.psd")).toBeInTheDocument();
     expect(listAdobeExports).toHaveBeenCalledWith("project-test");
@@ -98,5 +98,33 @@ describe("Adobe delivery export", () => {
     expect(screen.getByText(/源产物未覆盖/)).toBeInTheDocument();
     expect(screen.getByText("customer.ai")).toBeInTheDocument();
     expect(screen.getAllByText(/保存路径未记录/).length).toBeGreaterThan(0);
+  });
+
+  it("fails closed in the UI when native Adobe export is unavailable", async () => {
+    const exportAdobeFile = vi.fn();
+    const client = {
+      getProjects: vi.fn().mockResolvedValue([PROJECT]),
+      getProjectDelivery: vi.fn().mockResolvedValue(DELIVERY),
+      openProjectArtifacts: vi.fn(),
+      exportAdobeFile,
+      listAdobeExports: vi.fn().mockResolvedValue([]),
+    } as unknown as KORYAOClient;
+
+    render(
+      <DeliveryPage
+        client={client}
+        initialProjectId="project-test"
+        nativeAdobeExport={false}
+      />,
+    );
+    await screen.findByRole("option", { name: /vector\.svg/ });
+
+    expect(screen.getByText(/当前平台运行时不支持/)).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "当前平台原生 Adobe 导出未启用" }),
+    ).toBeDisabled();
+    expect(screen.getByRole("checkbox")).toBeDisabled();
+    expect(exportAdobeFile).not.toHaveBeenCalled();
+    expect(client.listAdobeExports).not.toHaveBeenCalled();
   });
 });

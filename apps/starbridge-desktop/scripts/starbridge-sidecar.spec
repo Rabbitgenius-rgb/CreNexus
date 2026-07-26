@@ -11,6 +11,10 @@ VECTOR60_DISTRIBUTIONS = ("vtracer", "skia-pathops", "svgpathtools")
 VECTOR60_METADATA = []
 for distribution in VECTOR60_DISTRIBUTIONS:
     VECTOR60_METADATA += copy_metadata(distribution)
+MODEL_CONTRACT_SCHEMA_DATA = [
+    (str(path), "model_contracts/schemas")
+    for path in sorted((REPO_ROOT / "model_contracts" / "schemas").glob("*.json"))
+]
 TARGET_TRIPLE = os.environ.get("STARBRIDGE_SIDECAR_TARGET_TRIPLE", "")
 if TARGET_TRIPLE:
     if (
@@ -26,8 +30,9 @@ analysis = Analysis(
     [str(SCRIPT_DIR / "sidecar_entry.py")],
     pathex=[str(REPO_ROOT)],
     binaries=[],
-    datas=VECTOR60_METADATA,
+    datas=[*VECTOR60_METADATA, *MODEL_CONTRACT_SCHEMA_DATA],
     hiddenimports=[
+        "model_contracts.schemas",
         "starbridge_mcp.backend",
         "starbridge_mcp.mcp_server",
         "starbridge_mcp.server",

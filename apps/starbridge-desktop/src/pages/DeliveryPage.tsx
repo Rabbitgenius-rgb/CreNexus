@@ -7,9 +7,10 @@ import type { AdobeExportFormat, AdobeExportReceipt, Project, ProjectDelivery } 
 interface DeliveryPageProps {
   client: KORYAOClient;
   initialProjectId?: string;
+  nativeAdobeExport: boolean;
 }
 
-export function DeliveryPage({ client, initialProjectId }: DeliveryPageProps) {
+export function DeliveryPage({ client, initialProjectId, nativeAdobeExport }: DeliveryPageProps) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectsLoading, setProjectsLoading] = useState(true);
   const [projectId, setProjectId] = useState(initialProjectId ?? "");
@@ -82,18 +83,22 @@ export function DeliveryPage({ client, initialProjectId }: DeliveryPageProps) {
     }).finally(() => {
       if (active) setDeliveryLoading(false);
     });
-    void client.listAdobeExports(projectId).then((next) => {
-      if (active) setExportHistory(next);
-    }).catch((reason) => {
-      if (active) {
-        setExportHistory([]);
-        setHistoryError(reason instanceof Error ? reason.message : "Adobe 导出历史暂时无法读取。");
-      }
-    }).finally(() => {
-      if (active) setExportHistoryLoading(false);
-    });
+    if (nativeAdobeExport) {
+      void client.listAdobeExports(projectId).then((next) => {
+        if (active) setExportHistory(next);
+      }).catch((reason) => {
+        if (active) {
+          setExportHistory([]);
+          setHistoryError(reason instanceof Error ? reason.message : "Adobe 导出历史暂时无法读取。");
+        }
+      }).finally(() => {
+        if (active) setExportHistoryLoading(false);
+      });
+    } else {
+      setExportHistoryLoading(false);
+    }
     return () => { active = false; };
-  }, [client, projectId]);
+  }, [client, nativeAdobeExport, projectId]);
   useEffect(() => {
     setExportSource((current) => compatibleArtifacts.some((artifact) => artifact.relativePath === current)
       ? current
@@ -162,16 +167,17 @@ export function DeliveryPage({ client, initialProjectId }: DeliveryPageProps) {
         <div className="delivery-summary"><div><span>实际格式</span><strong>{delivery.formats.join(" · ") || "无扩展名"}</strong></div><div><span>产物</span><strong>{delivery.artifacts.length}</strong></div><div><span>证据</span><strong>{delivery.evidenceIds.length}</strong></div></div>
         <div className="button-row"><button type="button" className="primary" onClick={() => void openArtifacts()}>打开项目交付目录</button></div>
         <section className="record-panel adobe-export-panel">
-          <div className="section-heading"><div><span>Adobe 原生交付</span><h3>选择产物与保存路径</h3></div><span className="state-label neutral">不覆盖已有文件</span></div>
+          <div className="section-heading"><div><span>Adobe 原生交付</span><h3>{nativeAdobeExport ? "选择产物与保存路径" : "当前平台未启用"}</h3></div><span className="state-label neutral">{nativeAdobeExport ? "不覆盖已有文件" : "Windows only"}</span></div>
+          {!nativeAdobeExport ? <p className="truth-note" role="status">当前平台运行时不支持 Photoshop PSD 或 Illustrator AI 原生导出。不会读取来源、打开保存窗口、创建暂存文件或写入目标路径；SVG 与预览产物仍可正常核对。</p> : null}
           <div className="adobe-export-format" role="group" aria-label="Adobe 导出格式">
-            <button type="button" className={exportFormat === "ai" ? "is-selected" : ""} onClick={() => setExportFormat("ai")}><strong>AI</strong><span>用真实 SVG 生成 Illustrator 工程</span></button>
-            <button type="button" className={exportFormat === "psd" ? "is-selected" : ""} onClick={() => setExportFormat("psd")}><strong>PSD</strong><span>用 PNG/JPEG 预览生成 Photoshop 图层文档</span></button>
+            <button type="button" disabled={!nativeAdobeExport} className={exportFormat === "ai" ? "is-selected" : ""} onClick={() => setExportFormat("ai")}><strong>AI</strong><span>{nativeAdobeExport ? "用真实 SVG 生成 Illustrator 工程" : "当前平台不支持原生导出"}</span></button>
+            <button type="button" disabled={!nativeAdobeExport} className={exportFormat === "psd" ? "is-selected" : ""} onClick={() => setExportFormat("psd")}><strong>PSD</strong><span>{nativeAdobeExport ? "用 PNG/JPEG 预览生成 Photoshop 图层文档" : "当前平台不支持原生导出"}</span></button>
           </div>
           <div className="form-grid">
             <label>转换来源<select aria-label="转换来源" value={exportSource} onChange={(event) => { setExportSource(event.target.value); setConfirmExport(false); }}><option value="">请选择兼容产物</option>{compatibleArtifacts.map((artifact) => <option key={artifact.artifactId} value={artifact.relativePath}>{artifact.basename} · {artifact.kind} · {Math.ceil(artifact.sizeBytes / 1024)} KB</option>)}</select></label>
           </div>
-          <label className="confirmation-check"><input type="checkbox" checked={confirmExport} onChange={(event) => setConfirmExport(event.target.checked)} /><span>我确认调用本机 {exportFormat === "ai" ? "Illustrator" : "Photoshop"}，随后在系统窗口选择一个新的保存路径；KORYAO 不覆盖已有文件。</span></label>
-          <div className="button-row"><button type="button" className="primary" disabled={exportBusy || !exportSource || !confirmExport} onClick={() => void exportAdobeFile()}>{exportBusy ? "Adobe 正在保存并重开验证…" : `选择路径并导出 .${exportFormat}`}</button></div>
+          <label className="confirmation-check"><input type="checkbox" disabled={!nativeAdobeExport} checked={confirmExport} onChange={(event) => setConfirmExport(event.target.checked)} /><span>{nativeAdobeExport ? <>我确认调用本机 {exportFormat === "ai" ? "Illustrator" : "Photoshop"}，随后在系统窗口选择一个新的保存路径；KORYAO 不覆盖已有文件。</> : "当前平台不会启动 Adobe、保存 picker 或任何导出写入。"}</span></label>
+          <div className="button-row"><button type="button" className="primary" disabled={!nativeAdobeExport || exportBusy || !exportSource || !confirmExport} onClick={() => void exportAdobeFile()}>{exportBusy ? "Adobe 正在保存并重开验证…" : nativeAdobeExport ? `选择路径并导出 .${exportFormat}` : "当前平台原生 Adobe 导出未启用"}</button></div>
           {!compatibleArtifacts.length ? <p className="truth-note">当前项目没有可用于 .{exportFormat} 的真实来源产物。先完成矢量工作流，再回到这里导出。</p> : null}
         </section>
         <section className="record-panel adobe-export-history">

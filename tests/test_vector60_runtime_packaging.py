@@ -5,6 +5,8 @@ import re
 import unittest
 from pathlib import Path
 
+from model_contracts.schema_registry import SCHEMA_NAMES
+
 try:
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover - Python 3.10 uses the project dependency
@@ -12,6 +14,9 @@ except ModuleNotFoundError:  # pragma: no cover - Python 3.10 uses the project d
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+SIDECAR_BASE_RUNTIME_VERSIONS = {
+    "jsonschema": "4.26.0",
+}
 PYTHON_RUNTIME_VERSIONS = {
     "vtracer": "0.6.15",
     "skia-pathops": "0.9.2",
@@ -52,7 +57,34 @@ class Vector60RuntimePackagingTest(unittest.TestCase):
         setup = (REPO_ROOT / "scripts" / "setup_starbridge.ps1").read_text(encoding="utf-8")
         self.assertIn('"-e", ".[vector60]"', setup)
 
-    def test_sidecar_pins_and_collects_python_runtime_only(self) -> None:
+    def test_sidecar_pins_base_runtime_dependency_closure(self) -> None:
+        scripts = REPO_ROOT / "apps" / "starbridge-desktop" / "scripts"
+        requirements = (scripts / "requirements-sidecar-build.txt").read_text(encoding="utf-8")
+        with (REPO_ROOT / "pyproject.toml").open("rb") as handle:
+            project_dependencies = tomllib.load(handle)["project"]["dependencies"]
+
+        self.assertIn("jsonschema>=4.23,<5", project_dependencies)
+        for name, version in SIDECAR_BASE_RUNTIME_VERSIONS.items():
+            self.assertIn(f"{name}=={version}", requirements)
+
+    def test_sidecar_collects_model_contract_schema_resources(self) -> None:
+        scripts = REPO_ROOT / "apps" / "starbridge-desktop" / "scripts"
+        spec = (scripts / "starbridge-sidecar.spec").read_text(encoding="utf-8")
+        schema_directory = REPO_ROOT / "model_contracts" / "schemas"
+
+        self.assertEqual(
+            set(SCHEMA_NAMES),
+            {path.name for path in schema_directory.glob("*.json")},
+        )
+        self.assertIn('glob("*.json")', spec)
+        self.assertIn('"model_contracts/schemas"', spec)
+        self.assertIn('"model_contracts.schemas"', spec)
+        self.assertIn(
+            "datas=[*VECTOR60_METADATA, *MODEL_CONTRACT_SCHEMA_DATA]",
+            spec,
+        )
+
+    def test_sidecar_pins_and_collects_vector60_python_components(self) -> None:
         scripts = REPO_ROOT / "apps" / "starbridge-desktop" / "scripts"
         requirements = (scripts / "requirements-sidecar-build.txt").read_text(encoding="utf-8")
         spec = (scripts / "starbridge-sidecar.spec").read_text(encoding="utf-8")

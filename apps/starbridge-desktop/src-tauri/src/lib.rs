@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Manager, RunEvent, State};
 use tauri_plugin_shell::{
-    process::{CommandChild, CommandEvent},
+    process::{Command, CommandChild, CommandEvent},
     ShellExt,
 };
 use uuid::Uuid;
@@ -142,9 +142,20 @@ struct ApiResponse {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeCapabilities {
+    exact_pixel_reconstruction: bool,
+    native_adobe_export: bool,
+    svgo_packaged: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct VersionInfo {
     desktop: &'static str,
     backend: Option<String>,
+    platform: &'static str,
+    capabilities: RuntimeCapabilities,
 }
 
 enum ProcessOutcome {
@@ -231,6 +242,53 @@ async fn authenticated_startup_probe(port: u16, session_credential: &str) -> boo
         .is_ok_and(|response| response.status().is_success())
 }
 
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+const MACOS_ARM64_SIDECAR_EXECUTABLE: &str = "starbridge-sidecar-aarch64-apple-darwin";
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+const MACOS_ARM64_SIDECAR_SUPPORT: &str = "_internal-aarch64-apple-darwin";
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn validate_macos_arm64_sidecar_resources(
+    resource_dir: &std::path::Path,
+) -> Result<PathBuf, &'static str> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let executable = resource_dir.join(MACOS_ARM64_SIDECAR_EXECUTABLE);
+    let executable_metadata = std::fs::symlink_metadata(&executable)
+        .map_err(|_| "sidecar_resource_executable_missing")?;
+    if executable_metadata.file_type().is_symlink()
+        || !executable_metadata.is_file()
+        || executable_metadata.permissions().mode() & 0o111 == 0
+    {
+        return Err("sidecar_resource_executable_invalid");
+    }
+
+    let support = resource_dir.join(MACOS_ARM64_SIDECAR_SUPPORT);
+    let support_metadata =
+        std::fs::symlink_metadata(support).map_err(|_| "sidecar_resource_support_missing")?;
+    if support_metadata.file_type().is_symlink() || !support_metadata.is_dir() {
+        return Err("sidecar_resource_support_invalid");
+    }
+    Ok(executable)
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn packaged_backend_command(app: &AppHandle) -> Result<Command, &'static str> {
+    let resource_dir = app
+        .path()
+        .resource_dir()
+        .map_err(|_| "sidecar_resource_dir_unavailable")?;
+    let executable = validate_macos_arm64_sidecar_resources(&resource_dir)?;
+    Ok(app.shell().command(executable))
+}
+
+#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+fn packaged_backend_command(app: &AppHandle) -> Result<Command, &'static str> {
+    app.shell()
+        .sidecar("starbridge-sidecar")
+        .map_err(|_| "sidecar_not_staged")
+}
+
 async fn run_backend_once(
     app: &AppHandle,
     manager: &BackendManager,
@@ -247,9 +305,9 @@ async fn run_backend_once(
         Ok(path) => path,
         Err(_) => return ProcessOutcome::UnexpectedExit("app_data_root_unavailable"),
     };
-    let command = match app.shell().sidecar("starbridge-sidecar") {
+    let command = match packaged_backend_command(app) {
         Ok(command) => command,
-        Err(_) => return ProcessOutcome::UnexpectedExit("sidecar_not_staged"),
+        Err(code) => return ProcessOutcome::UnexpectedExit(code),
     }
     .args([
         "--desktop",
@@ -938,6 +996,35 @@ async fn restart_backend(
     Ok(manager.snapshot())
 }
 
+const APP_DATA_MARKERS: &[&str] = &[
+    "data",
+    "history",
+    "cache",
+    "projects",
+    "jobs",
+    "artifacts",
+    "evidence",
+    "deliveries",
+    "license",
+    "adobe-export-receipts",
+];
+
+fn contains_known_app_data(root: &std::path::Path) -> bool {
+    APP_DATA_MARKERS
+        .iter()
+        .any(|marker| root.join(marker).exists())
+}
+
+fn select_compatible_data_root(current: PathBuf, legacy: Option<PathBuf>) -> PathBuf {
+    if contains_known_app_data(&current) {
+        return current;
+    }
+    match legacy {
+        Some(legacy) if contains_known_app_data(&legacy) => legacy,
+        _ => current,
+    }
+}
+
 fn starbridge_data_root(app: &AppHandle) -> Result<PathBuf, String> {
     if let Some(configured) = std::env::var_os(APP_DATA_ENV) {
         let configured = PathBuf::from(configured);
@@ -950,11 +1037,21 @@ fn starbridge_data_root(app: &AppHandle) -> Result<PathBuf, String> {
         };
     }
     if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
-        return Ok(PathBuf::from(local_app_data).join("KORYAO"));
+        let parent = PathBuf::from(local_app_data);
+        return Ok(select_compatible_data_root(
+            parent.join("KORYAO"),
+            Some(parent.join("CreNexus")),
+        ));
     }
-    app.path()
+    let current = app
+        .path()
         .app_local_data_dir()
-        .map_err(|_| "无法确定 KORYAO 应用数据目录。".to_string())
+        .map_err(|_| "无法确定 KORYAO 应用数据目录。".to_string())?;
+    #[cfg(target_os = "macos")]
+    let legacy = current.parent().map(|parent| parent.join("CreNexus"));
+    #[cfg(not(target_os = "macos"))]
+    let legacy = None;
+    Ok(select_compatible_data_root(current, legacy))
 }
 
 fn record_runtime_diagnostic(app: &AppHandle, code: &str) {
@@ -992,6 +1089,12 @@ fn version_info() -> VersionInfo {
     VersionInfo {
         desktop: env!("CARGO_PKG_VERSION"),
         backend: Some("0.1.0".into()),
+        platform: std::env::consts::OS,
+        capabilities: RuntimeCapabilities {
+            exact_pixel_reconstruction: true,
+            native_adobe_export: cfg!(windows),
+            svgo_packaged: false,
+        },
     }
 }
 
@@ -1234,5 +1337,112 @@ mod tests {
         let mut decoder = ReadyStreamDecoder::default();
         assert!(decoder.push(&vec![b'x'; MAX_READY_BUFFER_BYTES]).is_ok());
         assert!(decoder.push(b"x").is_err());
+    }
+
+    #[test]
+    fn legacy_data_is_reused_only_when_the_current_root_has_no_known_data() {
+        let base = std::env::temp_dir().join(format!(
+            "koryao-compatible-data-root-{}",
+            Uuid::new_v4().simple()
+        ));
+        let current = base.join("io.starbridge.desktop");
+        let legacy = base.join("CreNexus");
+        std::fs::create_dir_all(legacy.join("history")).expect("legacy marker");
+
+        assert_eq!(
+            select_compatible_data_root(current.clone(), Some(legacy.clone())),
+            legacy
+        );
+
+        std::fs::create_dir_all(current.join("projects")).expect("current marker");
+        assert_eq!(
+            select_compatible_data_root(current.clone(), Some(legacy.clone())),
+            current
+        );
+        assert!(legacy.join("history").is_dir());
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn compatibility_lookup_does_not_create_or_migrate_directories() {
+        let base = std::env::temp_dir().join(format!(
+            "koryao-compatible-data-no-write-{}",
+            Uuid::new_v4().simple()
+        ));
+        let current = base.join("current");
+        let legacy = base.join("CreNexus");
+
+        assert_eq!(
+            select_compatible_data_root(current.clone(), Some(legacy.clone())),
+            current
+        );
+        assert!(!base.exists());
+        assert!(!legacy.exists());
+    }
+
+    #[test]
+    fn reported_runtime_capabilities_are_fail_closed_on_macos() {
+        let version = version_info();
+        assert!(version.capabilities.exact_pixel_reconstruction);
+        assert!(!version.capabilities.svgo_packaged);
+        #[cfg(target_os = "macos")]
+        assert!(!version.capabilities.native_adobe_export);
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn macos_arm64_resource_sidecar_requires_real_executable_and_support_siblings() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let root = std::env::temp_dir().join(format!(
+            "koryao-sidecar-resource-layout-{}",
+            Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&root).expect("resource root");
+        let executable = root.join(MACOS_ARM64_SIDECAR_EXECUTABLE);
+        let support = root.join(MACOS_ARM64_SIDECAR_SUPPORT);
+        std::fs::write(&executable, b"real sidecar").expect("resource executable");
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755))
+            .expect("executable mode");
+        std::fs::create_dir(&support).expect("resource support");
+        assert_eq!(
+            validate_macos_arm64_sidecar_resources(&root).expect("valid sibling layout"),
+            executable
+        );
+
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o644))
+            .expect("remove executable mode");
+        assert_eq!(
+            validate_macos_arm64_sidecar_resources(&root),
+            Err("sidecar_resource_executable_invalid")
+        );
+        std::fs::remove_file(&executable).expect("remove invalid executable");
+        let external_executable = root.join("external-sidecar");
+        std::fs::write(&external_executable, b"external").expect("external executable");
+        std::fs::set_permissions(
+            &external_executable,
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .expect("external executable mode");
+        symlink(&external_executable, &executable).expect("symlink executable");
+        assert_eq!(
+            validate_macos_arm64_sidecar_resources(&root),
+            Err("sidecar_resource_executable_invalid")
+        );
+
+        std::fs::remove_file(&executable).expect("remove executable symlink");
+        std::fs::write(&executable, b"real sidecar").expect("restore executable");
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755))
+            .expect("restore executable mode");
+        std::fs::remove_dir(&support).expect("remove support");
+        let external_support = root.join("external-support");
+        std::fs::create_dir(&external_support).expect("external support");
+        symlink(&external_support, &support).expect("symlink support");
+        assert_eq!(
+            validate_macos_arm64_sidecar_resources(&root),
+            Err("sidecar_resource_support_invalid")
+        );
+
+        let _ = std::fs::remove_dir_all(root);
     }
 }

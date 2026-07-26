@@ -114,7 +114,10 @@ def sanitize_path(value: str) -> str:
         redacted = re.sub(
             re.escape(filename), "<SENSITIVE_DRAFT_FILE>", redacted, flags=re.IGNORECASE
         )
+    lowered = redacted.lower()
     for extension in SENSITIVE_FILE_EXTENSIONS:
+        if extension not in lowered:
+            continue
         escaped = re.escape(extension.lstrip("."))
         redacted = re.sub(
             rf"(?i)([A-Za-z]:)?[^\s\"'<>|]+\.{escaped}\b",
@@ -189,6 +192,8 @@ def contains_sensitive_text(value: Any) -> bool:
     if any(filename in lowered for filename in SENSITIVE_FILENAMES):
         return True
     for extension in SENSITIVE_FILE_EXTENSIONS:
+        if extension not in lowered:
+            continue
         escaped = re.escape(extension.lstrip("."))
         if re.search(rf"(?i)([A-Za-z]:)?[^\s\"'<>|]+\.{escaped}\b", text):
             return True

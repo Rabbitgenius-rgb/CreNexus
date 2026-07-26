@@ -1,9 +1,14 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { ErrorState } from "../components/ErrorState/ErrorState";
 import { VECTOR_MODES } from "../content/vectorModes";
 import { UserFacingError, type KORYAOClient } from "../services/client";
-import type { VectorJob, VectorMode, VectorSelection } from "../types/api";
+import type {
+  VectorHistory,
+  VectorJob,
+  VectorMode,
+  VectorSelection,
+} from "../types/api";
 
 interface VectorizationPageProps {
   client: KORYAOClient;
@@ -26,24 +31,45 @@ export function VectorizationPage({
   onTaskSaved,
 }: VectorizationPageProps) {
   const [selection, setSelection] = useState<VectorSelection | null>(null);
-  const [mode, setMode] = useState<VectorMode>("smart");
+  const [mode, setMode] = useState<VectorMode>("exact");
   const [colors, setColors] = useState(12);
   const [maxDimension, setMaxDimension] = useState(2048);
   const [confirmed, setConfirmed] = useState(false);
   const [job, setJob] = useState<VectorJob | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<{ message: string; steps: string[] } | null>(null);
+  const [history, setHistory] = useState<VectorHistory>({
+    eventCount: 0,
+    events: [],
+  });
+  const [historyError, setHistoryError] = useState("");
+
+  const refreshHistory = useCallback(async () => {
+    try {
+      setHistory(await client.getVectorizationHistory());
+      setHistoryError("");
+    } catch {
+      setHistoryError("历史暂时无法读取；当前任务结果仍可继续核对。");
+    }
+  }, [client]);
+
+  useEffect(() => {
+    if (runtimeReady) void refreshHistory();
+  }, [refreshHistory, runtimeReady]);
 
   useEffect(() => {
     if (!job || (job.status !== "queued" && job.status !== "running")) return undefined;
     const timer = window.setTimeout(() => {
       void client.getVectorizationJob(job.jobId).then((next) => {
         setJob(next);
-        if (next.status === "completed") onTaskSaved();
+        if (next.status === "completed") {
+          onTaskSaved();
+          void refreshHistory();
+        }
       }).catch((reason: unknown) => setError(errorCopy(reason)));
     }, 550);
     return () => window.clearTimeout(timer);
-  }, [client, job, onTaskSaved]);
+  }, [client, job, onTaskSaved, refreshHistory]);
 
   const choose = async () => {
     setError(null);
@@ -77,7 +103,7 @@ export function VectorizationPage({
       setJob(await client.startVectorization({
         selectionId: selection.selectionId,
         mode,
-        parameters: { colors, maxDimension },
+        parameters: mode === "exact" ? {} : { colors, maxDimension },
         confirmRun: true,
         confirmWrite: true,
         confirmExport: true,
@@ -129,7 +155,7 @@ export function VectorizationPage({
             </div></div>
           </div>
           <div className="workflow-step">
-              <span className="step-number">3</span><div className="step-content"><h3>确认参数并执行</h3><div className="parameter-row"><label>目标颜色<input type="number" min="2" max="32" value={colors} disabled={mode === "exact" || mode === "editable-99"} onChange={(event) => setColors(Number(event.currentTarget.value))} /></label><label>最大边长<input type="number" min="256" max="8192" step="128" value={maxDimension} onChange={(event) => setMaxDimension(Number(event.currentTarget.value))} /></label></div>
+              <span className="step-number">3</span><div className="step-content"><h3>确认参数并执行</h3><div className="parameter-row"><label>目标颜色<input type="number" min="2" max="32" value={colors} disabled={mode === "exact" || mode === "editable-99"} onChange={(event) => setColors(Number(event.currentTarget.value))} /></label>{mode === "exact" ? <p className="saved-note">原始尺寸处理；超过安全像素或复杂度上限时会直接停止，不会缩小后冒充像素一致。</p> : <label>最大边长<input type="number" min="256" max="8192" step="128" value={maxDimension} onChange={(event) => setMaxDimension(Number(event.currentTarget.value))} /></label>}</div>
               {mode === "editable-99" ? <p className="saved-note">固定搜索 256、192、160、128、96、80、64、48、32 色；SSIM、difference、MAE、边缘 Dice 与 alpha MAE 必须全部通过。</p> : null}
               <label className="confirmation"><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.currentTarget.checked)} /><span>确认在 KORYAO 应用数据目录执行、写入并导出本次结果。</span></label>
               <button type="button" className="primary" disabled={!runtimeReady || !codexConnected || !selection || busy || running} onClick={() => void run()}>{running ? "正在本机处理" : "开始本机矢量化"}</button>
@@ -151,6 +177,28 @@ export function VectorizationPage({
           </div> : null}
         </aside>
       </div>
+      <section className="record-panel vector-history">
+        <div className="section-heading">
+          <div><span>持久化历史</span><h3>最近的图片矢量化</h3></div>
+          <span className="state-label neutral">{history.eventCount} 条</span>
+        </div>
+        {historyError ? <p className="truth-note" role="status">{historyError}</p> : null}
+        {history.events.length > 0 ? (
+          <ol className="event-list">
+            {history.events.map((event) => (
+              <li key={event.eventId}>
+                <span className="event-dot status-completed" />
+                <div>
+                  <strong>{event.summary}</strong>
+                  <p>{event.mode === "exact" ? "像素重建" : event.mode} · {event.sourceHash} · {new Date(event.createdAt).toLocaleString()}</p>
+                </div>
+              </li>
+            ))}
+          </ol>
+        ) : !historyError ? (
+          <p className="truth-note">还没有已完成记录。完成后会保存模式、质量指标与脱敏来源哈希。</p>
+        ) : null}
+      </section>
     </div>
   );
 }
