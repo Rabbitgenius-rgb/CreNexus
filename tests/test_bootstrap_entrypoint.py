@@ -361,6 +361,64 @@ class PosixBootstrapEntrypointTests(unittest.TestCase):
                     )
                 )
 
+    def test_empty_warning_json_works_with_system_bash_3_2(self) -> None:
+        system_bash = Path("/bin/bash")
+        if not system_bash.is_file():
+            self.skipTest("/bin/bash is unavailable")
+        version = subprocess.run(
+            [
+                system_bash,
+                "-c",
+                'printf "%s.%s" "${BASH_VERSINFO[0]}" "${BASH_VERSINFO[1]}"',
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        ).stdout
+        if version != "3.2":
+            self.skipTest(f"system Bash is {version}, not 3.2")
+
+        with tempfile.TemporaryDirectory(prefix="KORYAO bash 3.2 ") as temporary:
+            fake_bin = Path(temporary) / "bin"
+            fake_bin.mkdir()
+            for name in ("brew", "git", "xcode-select"):
+                executable = fake_bin / name
+                executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+                executable.chmod(0o755)
+            uname = fake_bin / "uname"
+            uname.write_text(
+                '#!/bin/sh\nif [ "${1:-}" = "-m" ]; then printf x86_64; else printf Darwin; fi\n',
+                encoding="utf-8",
+            )
+            uname.chmod(0o755)
+            environment = os.environ | {
+                "PATH": f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}"
+            }
+
+            completed = subprocess.run(
+                [
+                    system_bash,
+                    REPO_ROOT / "bootstrap.sh",
+                    "--profile",
+                    "core",
+                    "--skip-node",
+                    "--skip-codex-config",
+                    "--dry-run",
+                    "--json",
+                ],
+                cwd=REPO_ROOT,
+                check=False,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                env=environment,
+            )
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        payload = json.loads(completed.stdout)
+        self.assertEqual([], payload["warnings"])
+
     def test_dry_run_resolves_a_repository_path_with_spaces(self) -> None:
         with tempfile.TemporaryDirectory(prefix="cre nexus bootstrap ") as temporary_directory:
             linked_repo = Path(temporary_directory) / "KORYAO checkout with spaces"
