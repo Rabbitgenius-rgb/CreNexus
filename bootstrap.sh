@@ -216,7 +216,11 @@ emit_result() {
         printf '  "steps": '
         json_steps
         printf ',\n  "warnings": '
-        json_string_array "${warnings[@]}"
+        if (( ${#warnings[@]} )); then
+            json_string_array "${warnings[@]}"
+        else
+            json_string_array
+        fi
         printf ',\n  "next": ["Open a new Codex task in this repository so it reloads .codex/config.toml.","Use the version coordinator to probe capabilities; software version is advisory, not a whitelist.","Run bash ./bootstrap.sh --profile standard or --profile all when you need optional bridge dependencies."]\n'
         printf '}\n'
         return

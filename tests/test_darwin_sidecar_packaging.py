@@ -4,6 +4,7 @@ import contextlib
 import copy
 import json
 import os
+import shutil
 import signal
 import stat
 import subprocess
@@ -699,7 +700,7 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
             self.assertFalse(trace.exists())
 
     @unittest.skipUnless(sys.platform == "darwin", "Darwin loader injection test")
-    def test_wrapper_ignores_fake_path_and_loader_environment(self) -> None:
+    def test_wrapper_ignores_fake_path_and_post_launch_loader_environment(self) -> None:
         with tempfile.TemporaryDirectory(prefix="KORYAO fake wrapper path ") as temporary:
             fake_bin = Path(temporary) / "fake-bin"
             fake_bin.mkdir()
@@ -715,8 +716,12 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
             environment.update(
                 {
                     "PATH": os.fspath(fake_bin),
-                    "DYLD_INSERT_LIBRARIES": "/outside/injected.dylib",
                     "DYLD_LIBRARY_PATH": "/outside/dyld",
+                    "DYLD_FRAMEWORK_PATH": "/outside/frameworks",
+                    "DYLD_FALLBACK_LIBRARY_PATH": "/outside/fallback-dyld",
+                    "DYLD_FALLBACK_FRAMEWORK_PATH": "/outside/fallback-frameworks",
+                    "DYLD_FORCE_FLAT_NAMESPACE": "1",
+                    "DYLD_PRINT_TO_FILE": "/outside/dyld.log",
                     "LD_PRELOAD": "/outside/preload.so",
                     "LD_LIBRARY_PATH": "/outside/ld",
                     "MAGIC": "/outside/magic",
@@ -740,6 +745,58 @@ class DarwinSidecarPackagingTest(unittest.TestCase):
 
             self.assertEqual(0, completed.returncode, completed.stderr)
             self.assertFalse(trace.exists())
+
+    @unittest.skipUnless(sys.platform == "darwin", "Darwin loader injection test")
+    def test_dyld_insert_libraries_fails_before_wrapper_without_private_leaks(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="KORYAO dyld prelaunch ") as temporary:
+            root = Path(temporary)
+            fake_bin = root / "fake-bin"
+            fake_bin.mkdir()
+            trace = root / "fake-command.trace"
+            for name in ("dirname", "env", "sed", "python3"):
+                executable = fake_bin / name
+                executable.write_text(
+                    f"#!/bin/sh\nprintf {name!r} >> {os.fspath(trace)!r}\nexit 97\n",
+                    encoding="utf-8",
+                )
+                executable.chmod(0o755)
+
+            # A copied interpreter is not protected by the system path policy, so
+            # dyld deterministically processes the insertion before reading the
+            # wrapper. The wrapper cannot sanitize an environment it never sees.
+            shell = root / "sh"
+            shutil.copyfile("/bin/sh", shell)
+            shell.chmod(0o755)
+            private_path = root / "private customer source.psd"
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "PATH": os.fspath(fake_bin),
+                    "DYLD_INSERT_LIBRARIES": "/nonexistent-koryao-injected.dylib",
+                    "STARBRIDGE_APP_DATA_DIR": os.fspath(private_path),
+                }
+            )
+
+            completed = subprocess.run(
+                [
+                    shell,
+                    "-p",
+                    SCRIPTS_DIR / "Build-Sidecar.sh",
+                    "--print-plan",
+                    "--target-triple",
+                    "aarch64-apple-darwin",
+                ],
+                env=environment,
+                check=False,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            )
+
+            self.assertNotEqual(0, completed.returncode)
+            self.assertFalse(trace.exists())
+            output = completed.stdout + completed.stderr
+            self.assertNotIn(os.fspath(private_path), output)
 
     @unittest.skipUnless(sys.platform == "darwin", "macOS privileged shell test")
     def test_wrappers_ignore_bash_functions_xtrace_and_secret_expansion(self) -> None:

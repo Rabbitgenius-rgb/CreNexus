@@ -87,6 +87,34 @@ class SidecarArtifactTest(unittest.TestCase):
             encoding="utf-8",
         )
 
+    def write_valid_archive_fixture(self) -> None:
+        payload = b"fixture"
+        with tarfile.open(self.archive, "w") as bundle:
+            self.add_file(bundle, EXECUTABLE, 0o755)
+            support = tarfile.TarInfo(SUPPORT)
+            support.type = tarfile.DIRTYPE
+            support.mode = 0o755
+            bundle.addfile(support)
+        self.manifest.write_text(
+            json.dumps(
+                {
+                    "schema": "starbridge.sidecar-artifact.v1",
+                    "target_triple": TARGET,
+                    "entries": [
+                        {"path": SUPPORT, "mode": 0o755, "type": "directory"},
+                        {
+                            "path": EXECUTABLE,
+                            "mode": 0o755,
+                            "type": "file",
+                            "sha256": hashlib.sha256(payload).hexdigest(),
+                        },
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.write_digest()
+
     @staticmethod
     def add_file(bundle: tarfile.TarFile, name: str, mode: int = 0o644) -> None:
         payload = b"fixture"
@@ -139,6 +167,7 @@ class SidecarArtifactTest(unittest.TestCase):
         self.write_digest()
         self.write_dummy_manifest()
 
+    @unittest.skipUnless(os.name == "posix", "real symlink and POSIX mode roundtrip requires POSIX")
     def test_valid_roundtrip_preserves_hidden_dylib_symlink_and_0755(self) -> None:
         self.pack_valid()
         payload = json.loads(self.manifest.read_text(encoding="utf-8"))
@@ -174,13 +203,13 @@ class SidecarArtifactTest(unittest.TestCase):
                 self.assertIn(expected_error, completed.stderr)
 
     def test_digest_tamper_fails_closed(self) -> None:
-        self.pack_valid()
+        self.write_valid_archive_fixture()
         self.archive.write_bytes(self.archive.read_bytes() + b"tamper")
         completed = self.run_helper("verify-extract", expect_success=False)
         self.assertIn("archive digest mismatch", completed.stderr)
 
     def test_manifest_tamper_fails_closed(self) -> None:
-        self.pack_valid()
+        self.write_valid_archive_fixture()
         payload = json.loads(self.manifest.read_text(encoding="utf-8"))
         payload["entries"][0]["mode"] ^= 1
         self.manifest.write_text(json.dumps(payload), encoding="utf-8")
@@ -188,7 +217,7 @@ class SidecarArtifactTest(unittest.TestCase):
         self.assertIn("archive inventory does not match artifact manifest", completed.stderr)
 
     def test_archive_mode_tamper_fails_closed(self) -> None:
-        self.pack_valid()
+        self.write_valid_archive_fixture()
         rewritten = self.root / "rewritten.tar"
         with tarfile.open(self.archive, "r:") as source, tarfile.open(rewritten, "w") as output:
             for member in source.getmembers():
