@@ -273,11 +273,18 @@ export function App({ client: providedClient }: AppProps) {
       case "projects":
         return <ProjectsPage client={client} runtimeReady={status.state === "connected"} onOpenWorkflow={openWorkflow} />;
       case "workflows":
-      case "vectorization":
         if (connections?.drawing_enabled !== true) {
           return <IntegrationsPage client={client} connections={connections} loading={connectionsLoading} error={connectionsError} onRefresh={refreshConnections} onRestartBridge={restart} />;
         }
         return <WorkflowsPage client={client} runtimeReady={status.state === "connected"} initialProjectId={selectedProjectId} onOpenProjects={() => setPage("projects")} onOpenJob={openJob} />;
+      case "vectorization":
+        return <VectorizationPage
+          client={client}
+          runtimeReady={status.state === "connected"}
+          codexConnected={connections?.drawing_enabled === true}
+          onOpenConnections={() => setPage("integrations")}
+          onTaskSaved={() => void refreshTasks()}
+        />;
       case "diagramforge":
         return <DiagramForgePage />;
       case "ai-generation":
@@ -313,7 +320,11 @@ export function App({ client: providedClient }: AppProps) {
       case "job-detail":
         return <JobDetailPage client={client} jobId={selectedJobId} onOpenDelivery={openDelivery} onRetryVector={(projectId) => openWorkflow(projectId)} onBack={() => setPage("tasks")} onJobChanged={() => void refreshTasks()} />;
       case "delivery":
-        return <DeliveryPage client={client} initialProjectId={selectedProjectId} />;
+        return <DeliveryPage
+          client={client}
+          initialProjectId={selectedProjectId}
+          nativeAdobeExport={version?.capabilities?.nativeAdobeExport === true}
+        />;
       case "license":
         return <LicensePage client={client} license={license} version={version} onLicenseChanged={setLicense} />;
       case "diagnostics":

@@ -77,10 +77,9 @@ class VectorizationModeTests(unittest.TestCase):
         with Image.open(output / "preview.png") as preview, Image.open(source) as original:
             self.assertEqual(preview.convert("RGBA").tobytes(), original.convert("RGBA").tobytes())
 
-    def test_exact_mode_can_validate_an_explicit_resized_working_baseline(self) -> None:
+    def test_exact_mode_uses_original_3000_by_1000_rgba_baseline(self) -> None:
         source = self.root / "large-source.png"
-        image = Image.new("RGBA", (640, 320), (220, 30, 40, 255))
-        ImageDraw.Draw(image).rectangle((320, 0, 639, 319), fill=(20, 80, 210, 255))
+        image = Image.new("RGBA", (3000, 1000), (220, 30, 40, 192))
         image.save(source)
         original_bytes = source.read_bytes()
 
@@ -88,22 +87,46 @@ class VectorizationModeTests(unittest.TestCase):
             RunConfig(
                 input_path=str(source),
                 mode="exact",
-                reference_id="exact-resized",
+                reference_id="exact-original-size",
                 max_dimension=256,
+                colors=8,
+                simplify_ratio=0.1,
+                min_region_area=64,
+                alpha_threshold=200,
                 max_svg_size_mb=128,
             )
         )
 
-        output = self.output_root / "exact-resized" / "exact"
-        self.assertEqual((256, 128), (result["vector"]["width"], result["vector"]["height"]))
-        self.assertEqual((640, 320), (result["source"]["width"], result["source"]["height"]))
+        output = self.output_root / "exact-original-size" / "exact"
+        self.assertEqual((3000, 1000), (result["vector"]["width"], result["vector"]["height"]))
+        self.assertEqual((3000, 1000), (result["source"]["width"], result["source"]["height"]))
         self.assertTrue(result["exact_validation"]["pixel_match"])
-        self.assertTrue(result["exact_validation"]["source_resized"])
-        self.assertEqual(256, result["exact_validation"]["reference_width"])
-        self.assertEqual(128, result["exact_validation"]["reference_height"])
+        self.assertFalse(result["exact_validation"]["source_resized"])
+        self.assertEqual(3000, result["exact_validation"]["reference_width"])
+        self.assertEqual(1000, result["exact_validation"]["reference_height"])
+        self.assertEqual(0, result["parameters"]["max_dimension"])
         self.assertEqual(original_bytes, source.read_bytes())
-        self.assertIn("源文件保持不变", " ".join(result["warnings"]))
+        self.assertIn("不会缩小后冒充像素一致", " ".join(result["warnings"]))
         self.assertTrue((output / "vector.svg").is_file())
+        with Image.open(output / "preview.png") as preview:
+            self.assertEqual((3000, 1000), preview.size)
+
+    def test_exact_mode_fails_closed_above_original_pixel_limit(self) -> None:
+        source = self.root / "over-limit.png"
+        Image.new("RGBA", (4001, 1000), (20, 80, 210, 255)).save(source)
+
+        with self.assertRaises(VectorizationError) as raised:
+            run_vectorization(
+                RunConfig(
+                    input_path=str(source),
+                    mode="exact",
+                    reference_id="exact-over-limit",
+                    max_dimension=256,
+                )
+            )
+
+        self.assertEqual("input_too_large", raised.exception.code)
+        self.assertFalse((self.output_root / "exact-over-limit").exists())
 
     def test_svg_verifier_applies_the_caller_limit_with_a_256_mib_hard_cap(self) -> None:
         path = self.root / "limited.svg"

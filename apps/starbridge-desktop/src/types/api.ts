@@ -17,6 +17,12 @@ export interface RuntimeStatus {
 export interface VersionInfo {
   desktop: string;
   backend?: string;
+  platform?: string;
+  capabilities?: {
+    exactPixelReconstruction: boolean;
+    nativeAdobeExport: boolean;
+    svgoPackaged: boolean;
+  };
 }
 
 export type CodexConnectionState =

@@ -156,6 +156,31 @@ describe("desktop runtime status", () => {
     expect(screen.queryByText(/49152/)).not.toBeInTheDocument();
   });
 
+  it("routes 图片矢量化 to the direct exact reconstruction flow", async () => {
+    const client = makeClient({
+      state: "connected",
+      message: "安全本地服务已经就绪。",
+      recoveryAttempts: 0,
+    });
+    render(<App client={client} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "图片矢量化" }));
+
+    expect(
+      await screen.findByText("把图片转换为可交付的矢量文件"),
+    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "选择图片" })).toBeEnabled(),
+    );
+    expect(screen.getByRole("radio", { name: /像素矢量/ })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+    expect(
+      screen.queryByText("选择像素重建或可编辑矢量"),
+    ).not.toBeInTheDocument();
+  });
+
   it("does not report that projects are empty while the local project list is still loading", async () => {
     const client = makeClient({
       state: "connected",
@@ -545,13 +570,14 @@ describe("desktop runtime status", () => {
     client.getCreativeJobEvents = vi.fn().mockResolvedValue([]);
 
     render(<App client={client} />);
-    fireEvent.click(await screen.findByRole("button", { name: "图片矢量化" }));
+    fireEvent.click(await screen.findByRole("button", { name: "创意工作流" }));
     expect(await screen.findByText("example.png")).toBeInTheDocument();
     expect(screen.getAllByText(/像素重建/).length).toBeGreaterThan(0);
     expect(screen.getByRole("img", { name: "像素重建图标" })).toBeInTheDocument();
     expect(screen.getByText("像素重建 / PIXEL RECONSTRUCTION")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "选择像素重建模式" }));
-    fireEvent.change(screen.getByLabelText("像素重建最长边"), { target: { value: "512" } });
+    expect(screen.queryByLabelText("像素重建最长边")).not.toBeInTheDocument();
+    expect(screen.getByText(/像素重建始终按原始尺寸/)).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("SVG 安全上限"), { target: { value: "64" } });
     const createButton = screen.getByRole("button", { name: "建立像素重建任务" });
     await waitFor(() => expect(createButton).toBeEnabled());
@@ -562,7 +588,7 @@ describe("desktop runtime status", () => {
         projectId: "project-test",
         sourceAssetId: "asset-test",
         drawingMode: "exact",
-        parameters: { exact: { maxDimension: 512, maxSvgSizeMb: 64 } },
+        parameters: { exact: { maxSvgSizeMb: 64 } },
       }),
     ));
     expect((await screen.findAllByText("等待开始")).length).toBeGreaterThan(0);

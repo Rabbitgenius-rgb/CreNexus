@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 import unittest
 
 from starbridge_mcp.core.security import (
@@ -42,6 +43,48 @@ class SecuritySanitizerTests(unittest.TestCase):
         text = "Photoshop 修图桥 当前未完全就绪，详见 details.notes。"
         self.assertEqual(sanitize_text(text), text)
         self.assert_clean(sanitize_text(text))
+
+    def test_long_png_data_url_is_unchanged_and_sanitizes_under_five_seconds(self) -> None:
+        data_url = "data:image/png;base64," + ("A" * 36_114)
+
+        started = time.perf_counter()
+        sanitized = sanitize_text(data_url)
+        elapsed = time.perf_counter() - started
+
+        self.assertEqual(data_url, sanitized)
+        self.assertLess(elapsed, 5.0)
+
+    def test_long_png_data_url_sensitive_check_completes_under_five_seconds(self) -> None:
+        data_url = "data:image/png;base64," + ("A" * 36_114)
+
+        started = time.perf_counter()
+        sensitive = contains_sensitive_text(data_url)
+        elapsed = time.perf_counter() - started
+
+        self.assertFalse(sensitive)
+        self.assertLess(elapsed, 5.0)
+
+    def test_sensitive_extension_matching_preserves_existing_boundaries(self) -> None:
+        sensitive_samples = (
+            "exports/CLIENT.PSD",
+            "models/portrait.SaFeTeNsOrS",
+            r"relative\scene.AEPX",
+        )
+        for sample in sensitive_samples:
+            with self.subTest(sample=sample):
+                self.assertEqual("<SENSITIVE_FILE>", sanitize_path(sample))
+                self.assertTrue(contains_sensitive_text(sample))
+
+        ordinary_samples = (
+            "notes.psdraft",
+            "vector.ai2",
+            "checkpoint.safetensors_backup",
+            "普通 bridge 文本与 image/png data URL",
+        )
+        for sample in ordinary_samples:
+            with self.subTest(sample=sample):
+                self.assertEqual(sample, sanitize_path(sample))
+                self.assertFalse(contains_sensitive_text(sample))
 
     def test_malformed_uri_like_text_does_not_raise(self) -> None:
         samples = (

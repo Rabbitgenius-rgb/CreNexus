@@ -122,13 +122,24 @@ class TauriPlatformConfigTest(unittest.TestCase):
         self.assertIn("Build-Sidecar.ps1", release_workflow)
         self.assertIn("New-StarBridgeUpdateManifest.ps1", release_workflow)
 
-    def test_macos_merge_disables_unverified_tauri_sidecar_layout(self) -> None:
+    def test_macos_merge_packages_arm64_one_folder_sidecar_as_sibling_resources(
+        self,
+    ) -> None:
         bundle = self.macos["bundle"]
-        self.assertFalse(bundle["active"])
+        self.assertTrue(bundle["active"])
+        self.assertEqual(["app"], bundle["targets"])
         self.assertNotIn("externalBin", bundle)
-        self.assertNotIn("resources", bundle)
+        self.assertEqual(
+            {
+                "binaries/starbridge-sidecar-aarch64-apple-darwin":
+                    "starbridge-sidecar-aarch64-apple-darwin",
+                "binaries/_internal-aarch64-apple-darwin/":
+                    "_internal-aarch64-apple-darwin/",
+            },
+            bundle["resources"],
+        )
         config_text = MACOS_CONFIG.read_text(encoding="utf-8").lower()
-        self.assertNotIn("aarch64-apple-darwin", config_text)
+        self.assertIn("aarch64-apple-darwin", config_text)
         self.assertNotIn("x86_64-apple-darwin", config_text)
 
     def test_platform_neutral_base_does_not_require_any_sidecar(self) -> None:

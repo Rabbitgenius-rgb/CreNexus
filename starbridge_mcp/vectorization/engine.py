@@ -182,13 +182,14 @@ def load_source(path_value: str, max_pixels: int) -> tuple[Image.Image, dict[str
 
 def _configured(config: RunConfig) -> VectorPreset:
     try:
+        exact_mode = config.mode.strip().lower() == "exact"
         preset = configured_preset(
             config.mode,
-            colors=config.colors,
-            max_dimension=config.max_dimension,
-            simplify_ratio=config.simplify_ratio,
-            min_region_area=config.min_region_area,
-            alpha_threshold=config.alpha_threshold,
+            colors=None if exact_mode else config.colors,
+            max_dimension=None if exact_mode else config.max_dimension,
+            simplify_ratio=None if exact_mode else config.simplify_ratio,
+            min_region_area=None if exact_mode else config.min_region_area,
+            alpha_threshold=None if exact_mode else config.alpha_threshold,
             max_subpaths=config.max_subpaths,
             max_points=config.max_points,
             max_svg_size_mb=config.max_svg_size_mb,
@@ -1220,17 +1221,13 @@ def run_vectorization(config: RunConfig) -> dict[str, Any]:
                     "候选与局部恢复预算内未达到全部 99% 质量门槛；已保留质量最高结果与指标。"
                 )
         elif preset.mode == "exact":
-            work_image = (
-                _resize_for_design(source_image, preset.max_dimension)
-                if preset.max_dimension > 0
-                else source_image
-            )
+            work_image = source_image
             rectangles = _merge_exact_rectangles(work_image, preset)
             exact_validation = {
                 **_validate_exact_rectangles(work_image, rectangles),
                 "reference_width": work_image.width,
                 "reference_height": work_image.height,
-                "source_resized": work_image.size != source_image.size,
+                "source_resized": False,
             }
             if not exact_validation["pixel_match"]:
                 raise VectorizationError(
@@ -1239,14 +1236,9 @@ def run_vectorization(config: RunConfig) -> dict[str, Any]:
                 )
             vector_metrics = _write_exact_svg(svg_path, work_image, rectangles)
             work_image.save(preview_path, format="PNG")
-            if work_image.size != source_image.size:
-                warnings_list.append(
-                    "精确重建针对用户选择的本地缩放工作副本执行像素一致性验证；源文件保持不变。"
-                )
-            else:
-                warnings_list.append(
-                    "精确重建描述的是源像素网格，不会创造新的图像细节，也不等同于轻量商业插画。"
-                )
+            warnings_list.append(
+                "精确重建描述的是源像素网格，不会缩小后冒充像素一致，也不会创造新的图像细节。"
+            )
         else:
             _require_design_runtime()
             work_image = _resize_for_design(source_image, preset.max_dimension)

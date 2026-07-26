@@ -637,6 +637,7 @@ class KORYAOBackend:
             return float(value) if isinstance(value, int | float) else None
 
         try:
+            exact_mode = mode == "exact"
             report = run_vectorization(
                 RunConfig(
                     input_path=str(selection["path"]),
@@ -645,10 +646,10 @@ class KORYAOBackend:
                     output_dir=str(output_dir),
                     output_root=str(output_root),
                     colors=(None if mode in {"exact", "editable-99"} else optional_int("colors")),
-                    max_dimension=optional_int("maxDimension"),
-                    simplify_ratio=optional_float("simplifyRatio"),
-                    min_region_area=optional_int("minRegionArea"),
-                    alpha_threshold=optional_int("alphaThreshold"),
+                    max_dimension=None if exact_mode else optional_int("maxDimension"),
+                    simplify_ratio=None if exact_mode else optional_float("simplifyRatio"),
+                    min_region_area=None if exact_mode else optional_int("minRegionArea"),
+                    alpha_threshold=None if exact_mode else optional_int("alphaThreshold"),
                 )
             )
             result_preview, _, _ = self._image_preview_data_url(output_dir / "preview.png")

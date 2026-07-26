@@ -8,10 +8,12 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Thread
+from unittest import mock
 
 from PIL import Image
 
 from starbridge_mcp.backend import KORYAOBackend, make_handler
+from starbridge_mcp.vectorization import VectorizationError
 
 
 class BackendApiTests(unittest.TestCase):
@@ -118,6 +120,61 @@ class BackendApiTests(unittest.TestCase):
         serialized_history = json.dumps(history.body, ensure_ascii=False)
         self.assertNotIn(source.name, serialized_history)
         self.assertNotIn(str(source.parent), serialized_history)
+
+    def test_direct_exact_job_does_not_forward_design_parameters(self) -> None:
+        source = self._make_vector_source()
+        selected = self.backend.route(
+            "POST",
+            "/api/vectorization/selections",
+            json.dumps({"input_path": str(source)}).encode("utf-8"),
+        )
+        captured_configs = []
+
+        def capture_and_stop(config):
+            captured_configs.append(config)
+            raise VectorizationError("execution_failed", "test stop")
+
+        with mock.patch(
+            "starbridge_mcp.backend.run_vectorization",
+            side_effect=capture_and_stop,
+        ):
+            started = self.backend.route(
+                "POST",
+                "/api/vectorization/jobs",
+                json.dumps(
+                    {
+                        "selection_id": selected.body["data"]["selectionId"],
+                        "mode": "exact",
+                        "parameters": {
+                            "colors": 8,
+                            "maxDimension": 256,
+                            "simplifyRatio": 0.1,
+                            "minRegionArea": 64,
+                            "alphaThreshold": 200,
+                        },
+                        "confirm_run": True,
+                        "confirm_write": True,
+                        "confirm_export": True,
+                    }
+                ).encode("utf-8"),
+            )
+            job_id = started.body["data"]["jobId"]
+            deadline = time.monotonic() + 2
+            completed = started
+            while time.monotonic() < deadline:
+                completed = self.backend.route("GET", f"/api/vectorization/jobs/{job_id}")
+                if completed.body["data"]["status"] == "failed":
+                    break
+                time.sleep(0.01)
+
+        self.assertEqual("failed", completed.body["data"]["status"], completed.body)
+        self.assertEqual(1, len(captured_configs))
+        config = captured_configs[0]
+        self.assertIsNone(config.colors)
+        self.assertIsNone(config.max_dimension)
+        self.assertIsNone(config.simplify_ratio)
+        self.assertIsNone(config.min_region_area)
+        self.assertIsNone(config.alpha_threshold)
 
     def test_capabilities_endpoint_reuses_mcp_registry(self) -> None:
         response = self.backend.route("GET", "/api/capabilities?safe_only=true")

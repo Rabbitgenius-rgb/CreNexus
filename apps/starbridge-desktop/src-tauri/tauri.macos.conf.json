@@ -1,5 +1,10 @@
 {
   "bundle": {
-    "active": false
+    "active": true,
+    "targets": ["app"],
+    "resources": {
+      "binaries/starbridge-sidecar-aarch64-apple-darwin": "starbridge-sidecar-aarch64-apple-darwin",
+      "binaries/_internal-aarch64-apple-darwin/": "_internal-aarch64-apple-darwin/"
+    }
   }
 }

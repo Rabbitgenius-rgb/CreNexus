@@ -2,15 +2,22 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
+#[cfg(windows)]
 use std::process::{Command, Stdio};
+#[cfg(windows)]
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+#[cfg(windows)]
+use std::time::{Duration, Instant};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::AppHandle;
 
 use super::{starbridge_data_root, valid_vector_id};
 
+#[cfg(windows)]
 const EXPORT_TIMEOUT: Duration = Duration::from_secs(120);
+const NATIVE_ADOBE_UNAVAILABLE: &str =
+    "PSD/AI 原生导出当前仅支持 Windows；当前平台不会读取来源、打开保存窗口或创建暂存文件。";
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -122,12 +129,13 @@ fn read_receipts(data_root: &Path, project_id: &str) -> Vec<AdobeExportReceipt> 
 }
 
 fn valid_relative_artifact(relative_path: &str) -> bool {
-    let path = Path::new(relative_path);
-    !path.as_os_str().is_empty()
-        && !path.is_absolute()
-        && path
-            .components()
-            .all(|component| matches!(component, Component::Normal(_)))
+    !relative_path.is_empty()
+        && !relative_path.starts_with('/')
+        && !relative_path.contains(['\\', ':'])
+        && !relative_path.chars().any(char::is_control)
+        && relative_path
+            .split('/')
+            .all(|segment| !segment.is_empty() && !matches!(segment, "." | ".."))
 }
 
 fn resolve_source(
@@ -188,6 +196,7 @@ fn normalized_target(mut target: PathBuf, format: &str) -> Result<PathBuf, Strin
     Ok(target)
 }
 
+#[cfg(windows)]
 const PHOTOSHOP_SCRIPT: &str = r#"
 $ErrorActionPreference = 'Stop'
 $source = $env:KORYAO_ADOBE_SOURCE
@@ -229,6 +238,7 @@ if ($result -ne 'KORYAO_EXPORT_OK') { throw 'photoshop export validation failed'
 Write-Output 'KORYAO_EXPORT_OK'
 "#;
 
+#[cfg(windows)]
 const ILLUSTRATOR_SCRIPT: &str = r#"
 $ErrorActionPreference = 'Stop'
 $source = $env:KORYAO_ADOBE_SOURCE
@@ -337,7 +347,17 @@ fn execute_adobe_export(source: &Path, target: &Path, format: &str) -> Result<()
 
 #[cfg(not(windows))]
 fn execute_adobe_export(_source: &Path, _target: &Path, _format: &str) -> Result<(), String> {
-    Err("PSD/AI 原生导出当前只支持 Windows。".into())
+    Err(NATIVE_ADOBE_UNAVAILABLE.into())
+}
+
+#[cfg(windows)]
+fn require_native_adobe_export() -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn require_native_adobe_export() -> Result<(), String> {
+    Err(NATIVE_ADOBE_UNAVAILABLE.into())
 }
 
 fn validate_native_file(path: &Path, format: &str) -> Result<u64, String> {
@@ -401,6 +421,9 @@ pub async fn export_adobe_file(
     format: String,
     confirm_export: bool,
 ) -> Result<Option<AdobeExportReceipt>, String> {
+    // This must remain the first operation: unsupported platforms fail before
+    // app-data resolution, source parsing, a save picker, staging, or writes.
+    require_native_adobe_export()?;
     if !confirm_export {
         return Err("导出到用户选择的路径前需要明确确认。".into());
     }
@@ -492,6 +515,7 @@ pub fn list_adobe_exports(
     app: AppHandle,
     project_id: String,
 ) -> Result<Vec<AdobeExportReceipt>, String> {
+    require_native_adobe_export()?;
     if !valid_vector_id(&project_id, "project-") {
         return Err("项目标识无效。".into());
     }
@@ -505,12 +529,28 @@ mod tests {
 
     #[test]
     fn relative_artifacts_reject_escape_and_absolute_paths() {
-        assert!(valid_relative_artifact(
-            "artifacts/project-test/job-test/vector.svg"
-        ));
-        assert!(!valid_relative_artifact("../private/vector.svg"));
-        assert!(!valid_relative_artifact("C:/private/vector.svg"));
-        assert!(!valid_relative_artifact(""));
+        for path in [
+            "artifacts/project-test/job-test/vector.svg",
+            "artifacts/project-123/preview/image.png",
+        ] {
+            assert!(valid_relative_artifact(path), "{path}");
+        }
+        for path in [
+            "",
+            "/private/vector.svg",
+            "//server/share/vector.svg",
+            "C:/private/vector.svg",
+            "C:\\private\\vector.svg",
+            "\\\\server\\share\\vector.svg",
+            "artifacts\\project-test\\vector.svg",
+            "artifacts//project-test/vector.svg",
+            "artifacts/./project-test/vector.svg",
+            "artifacts/project-test/../private.svg",
+            "artifacts/project:test/vector.svg",
+            "artifacts/project-test/vector.svg\n",
+        ] {
+            assert!(!valid_relative_artifact(path), "{path:?}");
+        }
     }
 
     #[test]
@@ -607,5 +647,23 @@ mod tests {
         assert_eq!(receipts[0].receipt_id, "newer");
         assert_eq!(receipts[1].receipt_id, "older");
         fs::remove_dir_all(base).expect("remove receipt directory");
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn unsupported_platform_preflight_has_zero_filesystem_side_effects() {
+        let base =
+            std::env::temp_dir().join(format!("koryao-adobe-fail-closed-{}", uuid::Uuid::new_v4()));
+        let source = base.join("artifacts/project-test/vector.svg");
+        let staging = base.join("staging/adobe-exports");
+        let destination = base.join("customer.ai");
+
+        let error = require_native_adobe_export().expect_err("non-Windows must fail closed");
+
+        assert_eq!(error, NATIVE_ADOBE_UNAVAILABLE);
+        assert!(!base.exists());
+        assert!(!source.exists());
+        assert!(!staging.exists());
+        assert!(!destination.exists());
     }
 }

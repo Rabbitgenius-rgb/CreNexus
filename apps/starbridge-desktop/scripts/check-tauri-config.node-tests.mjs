@@ -163,15 +163,21 @@ test("valid base and Windows merge agree with the installed Tauri CLI", () => {
   });
 });
 
-test("disabled macOS sidecar overlay agrees with the installed Tauri CLI", () => {
+test("macOS sidecar bundle overlay agrees with the installed Tauri CLI", () => {
   const merged = mergePatch(clone(BASE_CONFIG), MACOS_PATCH);
-  assert.equal(merged.bundle.active, false);
+  assert.equal(merged.bundle.active, true);
+  assert.deepEqual(merged.bundle.targets, ["app"]);
   assert.equal(Object.hasOwn(merged.bundle, "externalBin"), false);
-  assert.equal(Object.hasOwn(merged.bundle, "resources"), false);
+  assert.deepEqual(merged.bundle.resources, {
+    "binaries/starbridge-sidecar-aarch64-apple-darwin":
+      "starbridge-sidecar-aarch64-apple-darwin",
+    "binaries/_internal-aarch64-apple-darwin/":
+      "_internal-aarch64-apple-darwin/",
+  });
   assertCheckerAndTauri({
     base: clone(BASE_CONFIG),
     expectedStatus: 0,
-    label: "disabled macOS sidecar configuration",
+    label: "macOS sidecar bundle configuration",
     patch: MACOS_PATCH,
     platform: "macos",
   });
