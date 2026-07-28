@@ -259,9 +259,7 @@ process.stdout.write(JSON.stringify({ frames, reply }));
                 if frame == {"kind": "session", "phase": "running"}
             ),
             next(
-                index
-                for index, frame in enumerate(payload["frames"])
-                if frame["kind"] == "method"
+                index for index, frame in enumerate(payload["frames"]) if frame["kind"] == "method"
             ),
         )
         self.assertTrue(payload["reply"]["result"]["ok"])
