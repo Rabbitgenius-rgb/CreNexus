@@ -23,6 +23,16 @@ Node Proxy 只接受以下本机 JSON-RPC 方法：
 
 协议 schema：`examples/photoshop_bridge/protocols/node_proxy_rpc.v1.schema.json`。
 
+## 本机回环与分发
+
+- Node Proxy 只监听 IPv4 回环地址 `127.0.0.1`（默认端口 `8971`），不监听局域网或公网接口。
+- UXP manifest 只白名单 `localhost:8971` 和 `127.0.0.1:8971` 的 `ws` / `http` origin。
+- UXP 客户端默认先尝试 `ws://localhost:8971/uxp`；连接建立失败时才回退 `ws://127.0.0.1:8971/uxp`。这用于处理 macOS / Windows 上 `localhost` 可能优先解析到 IPv6、而代理仅监听 IPv4 的差异。
+- 显式 `proxyUrl` 配置仍可使用，但不会自动追加回退地址；对应 origin 仍必须在 manifest 中明确授权，因此不会绕过网络白名单。
+- 一个通过校验的 HTTP RPC 会先发布一次 `running`，再向当前 UXP WebSocket 分发一次；收到唯一回复或超时后，只发布一次 `completed` 或 `failed`。不得重复调用分发或生产输出提升逻辑。
+
+自动测试覆盖双回环权限、CommonJS 入口、回退顺序和假 UXP WebSocket 的单次分发。Windows Photoshop 实机握手不在自动测试覆盖范围内，不得据此写成已验证。
+
 ## 输出 sandbox
 
 Node Proxy 从自身源码位置推导仓库根目录，不信任调用方传入的根路径。真实预览只允许写入：

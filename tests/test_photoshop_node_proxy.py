@@ -163,6 +163,112 @@ class PhotoshopNodeProxyTests(unittest.TestCase):
         self.assertEqual(-32001, payload["error"]["code"])
         self.assertIn("uxp_client_not_connected", payload["error"]["message"])
 
+    def test_rpc_is_forwarded_and_resolved_once_with_fake_uxp_client(self) -> None:
+        script = r"""
+import http from "node:http";
+import WebSocket from "ws";
+
+const port = __PORT__;
+const frames = [];
+const ws = new WebSocket(`ws://127.0.0.1:${port}/uxp`);
+ws.on("message", (data) => {
+  const message = JSON.parse(String(data || "{}"));
+  if (message.method) {
+    frames.push({ kind: "method", id: message.id, method: message.method });
+    ws.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: message.id,
+      result: {
+        ok: true,
+        photoshop_host: { app: "Photoshop", version: "test" },
+      },
+    }));
+    return;
+  }
+  if (message.type === "codex_session") {
+    frames.push({ kind: "session", phase: message.phase });
+  }
+});
+
+await new Promise((resolve, reject) => {
+  ws.once("open", resolve);
+  ws.once("error", reject);
+});
+ws.send(JSON.stringify({
+  type: "register",
+  host: "photoshop",
+  connectedAt: "2026-07-28T00:00:00.000Z",
+  photoshop_host: { app: "Photoshop", version: "test" },
+}));
+await new Promise((resolve) => setTimeout(resolve, 20));
+
+const body = JSON.stringify({
+  jsonrpc: "2.0",
+  id: 77,
+  method: "starbridge.ping",
+  params: {},
+});
+const reply = await new Promise((resolve, reject) => {
+  const request = http.request({
+    hostname: "127.0.0.1",
+    port,
+    path: "/rpc",
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Content-Length": Buffer.byteLength(body),
+    },
+  }, (response) => {
+    const chunks = [];
+    response.on("data", (chunk) => chunks.push(chunk));
+    response.on("end", () => resolve(JSON.parse(Buffer.concat(chunks).toString("utf8"))));
+  });
+  request.on("error", reject);
+  request.end(body);
+});
+await new Promise((resolve) => setTimeout(resolve, 50));
+const closed = new Promise((resolve) => ws.once("close", resolve));
+ws.close();
+await closed;
+process.stdout.write(JSON.stringify({ frames, reply }));
+""".replace("__PORT__", json.dumps(self.port))
+        process = subprocess.run(
+            ["node", "--input-type=module", "-e", script],
+            cwd=NODE_PROXY_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        payload = json.loads(process.stdout)
+
+        method_frames = [frame for frame in payload["frames"] if frame["kind"] == "method"]
+        session_phases = [
+            frame["phase"] for frame in payload["frames"] if frame["kind"] == "session"
+        ]
+        self.assertEqual(
+            [{"kind": "method", "id": 77, "method": "starbridge.ping"}],
+            method_frames,
+        )
+        self.assertEqual(1, session_phases.count("running"))
+        self.assertEqual(1, session_phases.count("completed"))
+        self.assertLess(
+            next(
+                index
+                for index, frame in enumerate(payload["frames"])
+                if frame == {"kind": "session", "phase": "running"}
+            ),
+            next(
+                index for index, frame in enumerate(payload["frames"]) if frame["kind"] == "method"
+            ),
+        )
+        self.assertTrue(payload["reply"]["result"]["ok"])
+
+        events = read_json(f"http://127.0.0.1:{self.port}/events")["events"]
+        request_events = [event for event in events if event.get("id") == 77]
+        self.assertEqual(1, sum(event["type"] == "rpc_forwarded" for event in request_events))
+        self.assertEqual(1, sum(event["type"] == "rpc_resolved" for event in request_events))
+
     def test_rpc_rejects_invalid_json_without_crashing(self) -> None:
         request = urllib.request.Request(
             f"http://127.0.0.1:{self.port}/rpc",
@@ -334,7 +440,7 @@ class PhotoshopNodeProxyTests(unittest.TestCase):
         )
 
     def test_uxp_bridge_declares_runtime_sandbox_guards(self) -> None:
-        index_source = (REPO_ROOT / "uxp" / "photoshop-bridge" / "src" / "index.js").read_text(
+        index_source = (REPO_ROOT / "uxp" / "photoshop-bridge" / "index.js").read_text(
             encoding="utf-8"
         )
         runner_source = (

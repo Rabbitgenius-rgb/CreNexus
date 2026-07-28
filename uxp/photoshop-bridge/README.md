@@ -4,8 +4,11 @@ This is the local UXP plugin side of the CreNexus Photoshop bridge.
 
 ## Current State
 
-- `src/index.js` exposes JSON-RPC handlers for `starbridge.ping`, `ps.document.info`, `ps.layers.list`, `ps.preview.export`, `ps.camera_raw.tune`, `ps.batchplay.validate.local`, and `ps.batchplay.execute_confirmed`.
-- `src/bridge-client.js` connects to the local Node Proxy WebSocket client endpoint.
+- 根目录 `index.js` 提供 `starbridge.ping`、`ps.document.info`、`ps.layers.list`、`ps.preview.export`、`ps.camera_raw.tune`、`ps.batchplay.validate.local` 和 `ps.batchplay.execute_confirmed` JSON-RPC handler。
+- 插件入口和本地模块使用 UXP 可直接加载的 CommonJS（经典 `<script>`、`require()`、`module.exports`），不依赖原生 ESM。
+- 入口放在插件根目录，使 `require("./src/...")` 同时符合“相对当前文件”规则和本机 UXP 的根目录解析行为。
+- `src/bridge-client.js` 默认连接 `ws://localhost:8971/uxp`；连接建立失败时只回退到 `ws://127.0.0.1:8971/uxp`。
+- 构造器仍可显式传入 `proxyUrl`；自定义地址必须同时进入 manifest 网络白名单，默认不会放宽到局域网或公网。
 - `src/batchplay-schema.js` and `src/batchplay-runner.js` enforce a typed allowlist and wrap write-like execution in `executeAsModal`.
 - `runModalJob` uses a bounded modal queue timeout, cancellation checkpoints, and explicit history commit/rollback metadata defined by `starbridge.photoshop-modal.v1`.
 - Confirmed BatchPlay duplicates the active document first and registers the copy for automatic close on cancellation or failure.
@@ -18,6 +21,8 @@ Protocol and safety details: [`docs/photoshop-uxp-modal-envelope.md`](../../docs
 ## Intended Chain
 
 `Codex -> MCP Server -> Node Proxy -> UXP Plugin -> Photoshop DOM / batchPlay / executeAsModal`
+
+上述双回环顺序用于兼容 macOS 和 Windows 对 `localhost` 的 IPv4/IPv6 解析差异。当前回归测试覆盖模块加载契约、地址顺序和安全回退；Windows Photoshop 实机仍需单独验证。
 
 ## What To Add Later
 

@@ -1,4 +1,4 @@
-import { validateDescriptor } from "./batchplay-schema.js";
+const { validateDescriptor } = require("./batchplay-schema.js");
 
 const photoshop = require("photoshop");
 const { action, app, core } = photoshop;
@@ -111,7 +111,7 @@ function modalEnvelope({ method, commandName, timeoutSeconds, status, history, e
   };
 }
 
-export async function runModalJob(method, params, handler) {
+async function runModalJob(method, params, handler) {
   const commandName = String(params?.commandName || method).slice(0, 96);
   const timeoutSeconds = boundedTimeout(params?.timeoutSeconds);
   const requestedHistoryTarget = String(params?.historyTarget || "active_document");
@@ -212,7 +212,7 @@ export async function runModalJob(method, params, handler) {
   }
 }
 
-export async function validateBatchPlay(descriptors) {
+async function validateBatchPlay(descriptors) {
   if (!Array.isArray(descriptors) || descriptors.length < 1 || descriptors.length > 32) {
     return [{ index: 0, allowed: false, reason: "descriptors must contain 1 to 32 items" }];
   }
@@ -222,7 +222,7 @@ export async function validateBatchPlay(descriptors) {
   }));
 }
 
-export async function executeTypedBatchPlay({ descriptors, requireConfirmation = true, sandboxOnly = true, commandName = "CreNexus BatchPlay" }) {
+async function executeTypedBatchPlay({ descriptors, requireConfirmation = true, sandboxOnly = true, commandName = "CreNexus BatchPlay" }) {
   const validations = await validateBatchPlay(descriptors);
   const blocked = validations.filter((item) => !item.allowed);
   if (blocked.length) {
@@ -283,3 +283,9 @@ export async function executeTypedBatchPlay({ descriptors, requireConfirmation =
     };
   });
 }
+
+module.exports = {
+  executeTypedBatchPlay,
+  runModalJob,
+  validateBatchPlay,
+};
