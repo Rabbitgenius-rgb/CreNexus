@@ -1,5 +1,5 @@
-import { BridgeClient } from "./bridge-client.js";
-import { executeTypedBatchPlay, runModalJob, validateBatchPlay } from "./batchplay-runner.js";
+const { BridgeClient } = require("./src/bridge-client.js");
+const { executeTypedBatchPlay, runModalJob, validateBatchPlay } = require("./src/batchplay-runner.js");
 
 const photoshop = require("photoshop");
 const { action, app } = photoshop;

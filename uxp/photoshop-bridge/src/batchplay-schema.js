@@ -1,4 +1,4 @@
-export const ALLOWLIST = {
+const ALLOWLIST = {
   get: {
     descriptorId: "get_document_or_layer_info",
     riskLevel: "safe_read_only",
@@ -25,7 +25,7 @@ export const ALLOWLIST = {
   },
 };
 
-export const DENYLIST = new Set([
+const DENYLIST = new Set([
   "delete",
   "duplicate",
   "mergeLayersNew",
@@ -61,7 +61,7 @@ function unsafePayloadReason(value) {
   return null;
 }
 
-export function validateDescriptor(descriptor) {
+function validateDescriptor(descriptor) {
   const action = String(descriptor?._obj || descriptor?.method || "").trim();
   if (!action) {
     return {
@@ -115,3 +115,9 @@ export function validateDescriptor(descriptor) {
     reason: "Descriptor is in the typed allowlist.",
   };
 }
+
+module.exports = {
+  ALLOWLIST,
+  DENYLIST,
+  validateDescriptor,
+};

@@ -54,6 +54,9 @@ jobs:
         with:
           node-version: "22"
 
+      - name: Install Photoshop Node Proxy dependencies
+        run: npm ci --prefix node_proxy/photoshop-bridge
+
       - name: Install Python dev deps
         run: |
           python -m pip install --upgrade pip
@@ -111,6 +114,9 @@ jobs:
         uses: actions/setup-node@v7
         with:
           node-version: "22"
+
+      - name: Install Photoshop Node Proxy dependencies
+        run: npm.cmd ci --prefix node_proxy/photoshop-bridge
 
       - name: Install Python dev deps
         run: |

@@ -12,6 +12,8 @@
     "localFileSystem": "fullAccess",
     "network": {
       "domains": [
+        "ws://localhost:8971",
+        "http://localhost:8971",
         "ws://127.0.0.1:8971",
         "http://127.0.0.1:8971"
       ]
